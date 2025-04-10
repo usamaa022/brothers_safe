@@ -1,23 +1,59 @@
+// Import Firebase modules
+import { initializeApp } from "firebase/app";
 
-import { initializeApp } from 'firebase/app';
-import { getFirestore, collection } from 'firebase/firestore';
+import { 
+  getFirestore, 
+  collection, 
+  addDoc, 
+  getDocs,
+  doc, 
+  getDoc, 
+  updateDoc, 
+  deleteDoc,
+  setDoc, // Optional: If you use setDoc elsewhere
+  onSnapshot 
+} from "firebase/firestore";
+import { 
+  getAuth, 
+  signInWithEmailAndPassword, 
+  signOut, 
+  onAuthStateChanged 
+} from "firebase/auth";
 
+// Your web app's Firebase configuration
 const firebaseConfig = {
-    apiKey: "AIzaSyDNS37JMFQC3A7Xofwgo8mK-ogOEq17YNQ",
-    authDomain: "brothersapp-c4311.firebaseapp.com",
-    projectId: "brothersapp-c4311",
-    storageBucket: "brothersapp-c4311.firebasestorage.app",
-    messagingSenderId: "889449322214",
-    appId: "1:889449322214:web:feb761e31905af89204d27",
-    measurementId: "G-TJXDSMTD3C"
+  apiKey: "AIzaSyC477ptkDMnUvkk_5Z-l_XqAPW5x9xAvgA",
+  authDomain: "brothers-37c26.firebaseapp.com",
+  projectId: "brothers-37c26",
+  storageBucket: "brothers-37c26.appspot.com", // Fixed typo here
+  messagingSenderId: "962544350145",
+  appId: "1:962544350145:web:68c0457b2ea86a8ad6b540",
+  measurementId: "G-RCYYHGF1RR"
 };
 
+// Initialize Firebase
 const app = initializeApp(firebaseConfig);
-export const db = getFirestore(app);
 
-// Create references to your collections
-export const contributionsRef = collection(db, 'contributions');
-export const expensesRef = collection(db, 'expenses');
-export const pendingRef = collection(db, 'pending');
+// Initialize Firestore
+const db = getFirestore(app);
 
+// Initialize Authentication
+const auth = getAuth(app);
 
+// Export Firebase services and utility functions
+export { 
+  db, 
+  auth, 
+  collection, 
+  addDoc, 
+  getDocs, 
+  doc, 
+  getDoc, 
+  updateDoc, 
+  deleteDoc, 
+  setDoc, // Optional: If you use setDoc elsewhere
+  signInWithEmailAndPassword, 
+  signOut,
+  onAuthStateChanged,
+  onSnapshot
+};
