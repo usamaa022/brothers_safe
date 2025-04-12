@@ -1,6 +1,5 @@
 // Import Firebase modules
 import { initializeApp } from "firebase/app";
-
 import { 
   getFirestore, 
   collection, 
@@ -39,6 +38,7 @@ const db = getFirestore(app);
 
 // Initialize Authentication
 const auth = getAuth(app);
+
 
 // Export Firebase services and utility functions
 export { 
