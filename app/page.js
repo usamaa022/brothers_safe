@@ -1,59 +1,78 @@
-"use client"; 
-import { getFirestore, onSnapshot } from "firebase/firestore";
-import { signInWithEmailAndPassword, signOut, onAuthStateChanged } from "../src/firebase";
+
+"use client";
 import { useState, useEffect, useRef } from "react";
-import { 
-  FaMoneyBillWave, FaReceipt, FaWallet, FaPlus, FaMinus, 
-  FaSignInAlt, FaSignOutAlt, FaEdit, FaTrash, FaCheck, 
-  FaTimes, FaHistory, FaChartBar, FaClock, FaSearch, 
-  FaFilter, FaEye, FaEyeSlash, FaCalendarAlt 
+import Image from 'next/image';
+
+import {
+  FaMoneyBillWave, FaReceipt, FaWallet, FaPlus, FaMinus,
+  FaSignInAlt, FaSignOutAlt, FaEdit, FaTrash, FaCheck,
+  FaTimes, FaFilter, FaEye, FaEyeSlash, FaCalendarAlt, FaChartBar, FaClock,
+  FaArrowUp, FaArrowDown, FaCamera, FaImage
 } from "react-icons/fa";
-import { format, parseISO } from "date-fns";
+import { format } from "date-fns";
 import { Bar, Pie } from "react-chartjs-2";
-import { 
-  Chart as ChartJS, ArcElement, Tooltip, Legend, 
-  CategoryScale, LinearScale, BarElement, Title 
+import {
+  Chart as ChartJS, ArcElement, Tooltip, Legend,
+  CategoryScale, LinearScale, BarElement, Title
 } from "chart.js";
-import { 
-  db, collection, addDoc, getDocs, getDoc, 
-  doc, updateDoc, deleteDoc, auth 
+import {
+  getFirestore, onSnapshot, collection, addDoc, query,
+  doc, updateDoc, deleteDoc, where, orderBy, getDocs
+} from "firebase/firestore";
+import {
+  getStorage, ref as storageRef, uploadBytes, getDownloadURL
+} from "firebase/storage";
+import {
+  auth,
+  onAuthStateChanged,
+  checkAdminStatus,
+  getUserDataByUsername,
+  signInWithEmailAndPassword,
+  signOut
 } from "../src/firebase";
+import '../src/style.css';
 
 // Register Chart.js components
 ChartJS.register(ArcElement, Tooltip, Legend, CategoryScale, LinearScale, BarElement, Title);
 
-// Expense categories
+// Expense categories in Kurdish (Sorani)
 const expenseCategories = [
-  "Internet", "Electricity", "Supplies", 
-  "Donations", "Collaboration", "Medical",
+  "ئینتەرنێت", "کارەبا", "کەلوپەلی ناوماڵ",
+  "دەعوەت", "دەرمان", "هی تر.. (تێبینی بنووسە)",
 ];
 
 export default function FinanceApp() {
   // Refs
   const chartsRef = useRef(null);
-  const historyRef = useRef(null);
   const pendingRef = useRef(null);
 
   // State variables
   const [currentUser, setCurrentUser] = useState(null);
+  const [userData, setUserData] = useState(null);
   const [isAdmin, setIsAdmin] = useState(false);
   const [loginError, setLoginError] = useState("");
-  const [showHistory, setShowHistory] = useState(false);
   const [showCharts, setShowCharts] = useState(false);
   const [showContributionForm, setShowContributionForm] = useState(false);
   const [showExpenseForm, setShowExpenseForm] = useState(false);
   const [showPendingApprovals, setShowPendingApprovals] = useState(false);
   const [editingTransaction, setEditingTransaction] = useState(null);
-  const [adminEmails, setAdminEmails] = useState([]);
   const [isLoading, setIsLoading] = useState(false);
   const [successMessage, setSuccessMessage] = useState("");
   const [successType, setSuccessType] = useState("success");
   const [filterType, setFilterType] = useState("all");
   const [filterCategory, setFilterCategory] = useState("all");
   const [dateRange, setDateRange] = useState({ start: "", end: "" });
+  const [amountRange, setAmountRange] = useState([250, 1000000]);
   const [showPassword, setShowPassword] = useState(false);
   const [showFilters, setShowFilters] = useState(false);
-  const [transactionHistory, setTransactionHistory] = useState([]);
+  const [deleteReason, setDeleteReason] = useState("");
+  const [searchNote, setSearchNote] = useState("");
+  const [currentPage, setCurrentPage] = useState(1);
+  const [transactionsPerPage] = useState(10);
+  const [imageUrl, setImageUrl] = useState("");
+  const [imageFile, setImageFile] = useState(null);
+  const [showImageModal, setShowImageModal] = useState(false);
+  const [selectedImageUrl, setSelectedImageUrl] = useState("");
 
   // Transaction data
   const [contributions, setContributions] = useState([]);
@@ -63,175 +82,258 @@ export default function FinanceApp() {
   const [pendingDeletions, setPendingDeletions] = useState([]);
   const [pendingEdits, setPendingEdits] = useState([]);
 
-  // Scroll to section
+  // Scroll to section smoothly
   const scrollToSection = (ref) => {
-    if (ref.current) {
-      ref.current.scrollIntoView({ behavior: 'smooth' });
+    if (ref && ref.current) {
+      ref.current.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    } else {
+      console.error("Ref is null or not assigned");
     }
   };
 
-  // Show success message
+  // Show success/error message
   const showSuccess = (message, type = "success") => {
     setSuccessMessage(message);
     setSuccessType(type);
     setTimeout(() => setSuccessMessage(""), 5000);
   };
 
-  // Check admin status
+  // Check admin status on auth change
   useEffect(() => {
     const unsubscribe = onAuthStateChanged(auth, async (user) => {
-      if (user) {
-        setCurrentUser(user);
-        
-        try {
-          const adminDoc = await getDoc(doc(db, "admin", "adminList"));
-          if (adminDoc.exists()) {
-            const adminList = adminDoc.data().emails || [];
-            setAdminEmails(adminList);
-            setIsAdmin(adminList.includes(user.email));
-          }
-        } catch (error) {
-          console.error("Error fetching admin list:", error);
+      try {
+        if (user) {
+          setCurrentUser(user);
+          const userDoc = await getUserData(user.email);
+          setUserData(userDoc);
+          const adminStatus = userDoc.isAdmin;
+          setIsAdmin(adminStatus);
+        } else {
+          setCurrentUser(null);
+          setUserData(null);
+          setIsAdmin(false);
         }
-      } else {
-        setCurrentUser(null);
-        setIsAdmin(false);
+      } catch (error) {
+        console.error("Auth state error:", error);
+        showSuccess("هەڵەیەك هەیە لە چوونەژووردناوی داخڵکراو", "error");
       }
     });
-    
-    return unsubscribe;
+
+    return () => unsubscribe();
   }, []);
 
-  // Fetch data
+  // Set the document title
+  useEffect(() => {
+    document.title = "brakan";
+  }, []);
+
+  // Fetch user data from Firestore
+  const getUserData = async (email) => {
+    const db = getFirestore();
+    const userRef = collection(db, "users");
+    const q = query(userRef, where("email", "==", email));
+    const querySnapshot = await getDocs(q);
+    if (!querySnapshot.empty) {
+      return querySnapshot.docs[0].data();
+    }
+    return null;
+  };
+
+  // Fetch all data with proper error handling
   useEffect(() => {
     if (!currentUser) return;
 
-    const unsubscribeContributions = onSnapshot(
-      collection(db, "contributions"),
-      (snapshot) => {
-        const data = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
-        setContributions(data.filter(c => c.status === "approved"));
-        setPendingContributions(data.filter(c => c.status === "pending"));
+    const db = getFirestore();
+    const unsubscribeFunctions = [];
+
+    const setupSnapshot = (collectionName, setData, statusFilter = null) => {
+      try {
+        let q;
+        if (statusFilter) {
+          q = query(
+            collection(db, collectionName),
+            where("status", "==", statusFilter)
+          );
+        } else {
+          q = query(collection(db, collectionName));
+        }
+
+        const unsubscribe = onSnapshot(q,
+          (snapshot) => {
+            const data = snapshot.docs.map(doc => ({
+              id: doc.id,
+              ...doc.data(),
+              amount: Number(doc.data().amount) || 0
+            }));
+            data.sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt));
+            setData(data);
+          },
+          (error) => {
+            console.error(`Error fetching ${collectionName}:`, error);
+            showSuccess(`هەڵەیەک هەیە لە هێنانی ${collectionName}`, "error");
+          }
+        );
+
+        unsubscribeFunctions.push(unsubscribe);
+      } catch (error) {
+        console.error(`Error setting up ${collectionName} snapshot:`, error);
+        showSuccess(`هەڵەیەک هەیە لە ڕێکخستنی ${collectionName}`, "error");
       }
-    );
-
-    const unsubscribeExpenses = onSnapshot(
-      collection(db, "expenses"),
-      (snapshot) => {
-        const data = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
-        setExpenses(data.filter(e => e.status === "approved"));
-        setPendingExpenses(data.filter(e => e.status === "pending"));
-      }
-    );
-
-    const unsubscribePendingDeletions = onSnapshot(
-      collection(db, "pendingDeletions"),
-      (snapshot) => setPendingDeletions(snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() })))
-    );
-
-    const unsubscribePendingEdits = onSnapshot(
-      collection(db, "pendingEdits"),
-      (snapshot) => setPendingEdits(snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() })))
-    );
-
-    const unsubscribeTransactionHistory = onSnapshot(
-      collection(db, "transactionHistory"),
-      (snapshot) => setTransactionHistory(snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() })))
-    );
-
-    return () => {
-      unsubscribeContributions();
-      unsubscribeExpenses();
-      unsubscribePendingDeletions();
-      unsubscribePendingEdits();
-      unsubscribeTransactionHistory();
     };
-  }, [currentUser, isAdmin]);
 
-  // Calculate totals - now showing admin view to all users
+    // Setup all collections
+    setupSnapshot("contributions", setContributions, "approved");
+    setupSnapshot("contributions", setPendingContributions, "pending");
+    setupSnapshot("expenses", setExpenses, "approved");
+    setupSnapshot("expenses", setPendingExpenses, "pending");
+    setupSnapshot("pendingDeletions", setPendingDeletions);
+    setupSnapshot("pendingEdits", setPendingEdits);
+
+    return () => unsubscribeFunctions.forEach(unsub => unsub());
+  }, [currentUser]);
+
+  // Calculate totals
   const totalContributions = contributions.reduce((sum, item) => sum + item.amount, 0);
   const totalExpenses = expenses.reduce((sum, item) => sum + item.amount, 0);
   const safeBalance = totalContributions - totalExpenses;
 
-  // Combine transactions
+  // Combine and format all transactions
   const allTransactions = [
-    ...contributions.map(c => ({ ...c, type: "Deposit", category: "Contribution" })),
-    ...expenses.map(e => ({ ...e, type: "Expense" })),
-    ...(isAdmin ? pendingContributions.map(c => ({ ...c, type: "Deposit", status: "pending", category: "Contribution" })) : []),
-    ...(isAdmin ? pendingExpenses.map(e => ({ ...e, type: "Expense", status: "pending" })) : [])
-  ]
-  .map(t => ({
-    ...t,
-    formattedDate: t.date ? format(new Date(t.date), "dd/MM/yyyy") : "No date",
-    amount: t.amount.toLocaleString("en-IQ") + " IQD",
-    pendingDeletion: pendingDeletions.find(d => d.transactionId === t.id),
-    pendingEdit: pendingEdits.find(e => e.transactionId === t.id)
-  }))
-  .sort((a, b) => new Date(b.date) - new Date(a.date));
+    ...contributions.map(c => ({
+      ...c,
+      type: "Deposit",
+      category: "Contribution",
+      formattedAmount: `${c.amount.toLocaleString("en-IQ")} IQD`,
+      formattedDate: c.date ? format(new Date(c.date), "dd/MM/yyyy") : "بێ بەروار",
+      brother: c.brother || userData?.username || currentUser.email,
+      pendingEdit: pendingEdits.some(edit => edit.transactionId === c.id),
+      pendingDeletion: pendingDeletions.some(deletion => deletion.transactionId === c.id)
+    })),
+    ...expenses.map(e => ({
+      ...e,
+      type: "Expense",
+      formattedAmount: `${e.amount.toLocaleString("en-IQ")} IQD`,
+      formattedDate: e.date ? format(new Date(e.date), "dd/MM/yyyy") : "بێ بەروار",
+      brother: e.brother || userData?.username || currentUser.email,
+      pendingEdit: pendingEdits.some(edit => edit.transactionId === e.id),
+      pendingDeletion: pendingDeletions.some(deletion => deletion.transactionId === e.id)
+    })),
+    ...pendingContributions.map(c => ({
+      ...c,
+      type: "Deposit",
+      status: "pending",
+      category: "Contribution",
+      formattedAmount: `${c.amount.toLocaleString("en-IQ")} IQD`,
+      formattedDate: c.date ? format(new Date(c.date), "dd/MM/yyyy") : "بێ بەروار",
+      brother: c.brother || userData?.username || currentUser.email,
+      pendingEdit: pendingEdits.some(edit => edit.transactionId === c.id),
+      pendingDeletion: pendingDeletions.some(deletion => deletion.transactionId === c.id)
+    })),
+    ...pendingExpenses.map(e => ({
+      ...e,
+      type: "Expense",
+      status: "pending",
+      formattedAmount: `${e.amount.toLocaleString("en-IQ")} IQD`,
+      formattedDate: e.date ? format(new Date(e.date), "dd/MM/yyyy") : "بێ بەروار",
+      brother: e.brother || userData?.username || currentUser.email,
+      pendingEdit: pendingEdits.some(edit => edit.transactionId === e.id),
+      pendingDeletion: pendingDeletions.some(deletion => deletion.transactionId === e.id)
+    }))
+  ].sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt));
 
   // Filter transactions
   const filteredTransactions = allTransactions.filter(t => {
-    const matchesType = filterType === "all" || 
-                       (filterType === "deposit" && t.type === "Deposit") || 
-                       (filterType === "expense" && t.type === "Expense");
-    
-    const matchesCategory = filterCategory === "all" || t.category === filterCategory;
-    
-    const transactionDate = t.date ? new Date(t.date) : null;
-    const matchesDate = (!dateRange.start || (transactionDate && transactionDate >= new Date(dateRange.start))) && 
-                        (!dateRange.end || (transactionDate && transactionDate <= new Date(dateRange.end)));
+    const matchesType = filterType === "all" ||
+      (filterType === "deposit" && t.type === "Deposit") ||
+      (filterType === "expense" && t.type === "Expense");
 
-    return matchesType && matchesCategory && matchesDate;
+    const matchesCategory = filterCategory === "all" || t.category === filterCategory;
+
+    const transactionDate = t.date ? new Date(t.date) : null;
+    const startDate = dateRange.start ? new Date(dateRange.start) : null;
+    const endDate = dateRange.end ? new Date(dateRange.end) : null;
+
+    const matchesDate = (!startDate || (transactionDate && transactionDate >= startDate)) &&
+      (!endDate || (transactionDate && transactionDate <= endDate));
+
+    const matchesAmount = (t.amount >= amountRange[0]) &&
+      (t.amount <= amountRange[1]);
+
+    const matchesNote = t.note ? t.note.toLowerCase().includes(searchNote.toLowerCase()) : true;
+
+    return matchesType && matchesCategory && matchesDate && matchesAmount && matchesNote;
   });
 
-  // Clear filters
+  // Pagination
+  const indexOfLastTransaction = currentPage * transactionsPerPage;
+  const indexOfFirstTransaction = indexOfLastTransaction - transactionsPerPage;
+  const currentTransactions = filteredTransactions.slice(indexOfFirstTransaction, indexOfLastTransaction);
+
+  const paginate = (pageNumber) => setCurrentPage(pageNumber);
+
+  // Clear all filters
   const clearFilters = () => {
     setFilterType("all");
     setFilterCategory("all");
     setDateRange({ start: "", end: "" });
+    setAmountRange([250, 1000000]);
+    setSearchNote("");
   };
 
   // Auth handlers
   const handleLogin = async (e) => {
     e.preventDefault();
-    const { username, password } = e.target.elements;
+    const { email, password } = e.target.elements;
+    setLoginError("");
+    setIsLoading(true);
+
     try {
-      await signInWithEmailAndPassword(auth, username.value, password.value);
+      await signInWithEmailAndPassword(auth, email.value, password.value);
     } catch (error) {
+      console.error("Error logging in:", error);
       setLoginError(error.message);
-      showSuccess("Login failed", "error");
+      showSuccess("چوونەژووردن ناکام بوو، تکایە ئیمەیڵ و پاسووردت دووبارە بوێت", "error");
+    } finally {
+      setIsLoading(false);
     }
   };
 
   const handleLogout = async () => {
     try {
       await signOut(auth);
-      showSuccess("Logged out successfully");
+      showSuccess("بە سەرکەوتوویی دەرچوو");
     } catch (error) {
-      showSuccess("Logout failed", "error");
+      console.error("Error logging out:", error);
+      showSuccess("دەرچوون ناکام بوو، تکایە دووبارە بکە", "error");
     }
   };
 
   // Transaction handlers
-  const handleDeleteRequest = async (transaction, reason) => {
-    if (!reason) {
-      showSuccess("Please provide a reason", "error");
+  const handleDeleteRequest = async (transaction) => {
+    if (!deleteReason) {
+      showSuccess("تکایە هەمانەیەك بنووسە بۆ داواکردنی سڕینەوە", "error");
       return;
     }
-    
+
+    setIsLoading(true);
     try {
+      const db = getFirestore();
       await addDoc(collection(db, "pendingDeletions"), {
         transactionId: transaction.id,
         collectionName: transaction.type === "Deposit" ? "contributions" : "expenses",
-        deleteReason: reason,
+        deleteReason: deleteReason,
         requestedBy: currentUser.email,
         requestedAt: new Date().toISOString(),
         status: "pending"
       });
-      showSuccess("Delete request submitted!");
+      showSuccess("داواکردنی سڕینەوە بۆ پەسەندکردن ناردوو");
+      setDeleteReason("");
+      setEditingTransaction(null);
     } catch (error) {
       console.error("Error requesting deletion:", error);
-      showSuccess("Failed to submit request", "error");
+      showSuccess("ناتوانی داواکردنی سڕینەوە ناردوو", "error");
+    } finally {
+      setIsLoading(false);
     }
   };
 
@@ -239,21 +341,33 @@ export default function FinanceApp() {
     e.preventDefault();
     setIsLoading(true);
     const form = e.target;
-    const data = {
-      date: form.date.value,
-      amount: Number(form.amount.value),
-      note: form.note.value,
-      brother: currentUser.displayName || currentUser.email,
-      createdBy: currentUser.email,
-      status: isAdmin ? "approved" : "pending",
-      createdAt: new Date().toISOString()
-    };
-    
+
     try {
+      const db = getFirestore();
+      const storage = getStorage();
+      let imageUrl = "";
+
+      if (imageFile) {
+        const storageRef = ref(storage, `images/${imageFile.name}`);
+        await uploadBytes(storageRef, imageFile);
+        imageUrl = await getDownloadURL(storageRef);
+      }
+
+      const data = {
+        date: form.date.value,
+        amount: Number(form.amount.value),
+        note: form.note.value,
+        brother: userData?.username || currentUser.email,
+        createdBy: currentUser.email,
+        status: isAdmin ? "approved" : "pending",
+        createdAt: new Date().toISOString(),
+        imageUrl: imageUrl
+      };
+
       if (editingTransaction) {
         if (isAdmin) {
           await updateDoc(doc(db, "contributions", editingTransaction.id), data);
-          showSuccess("Contribution updated!");
+          showSuccess("کۆکردنەکان سەرکاوتوو بوو");
         } else {
           await addDoc(collection(db, "pendingEdits"), {
             transactionId: editingTransaction.id,
@@ -262,19 +376,22 @@ export default function FinanceApp() {
             requestedBy: currentUser.email,
             requestedAt: new Date().toISOString(),
             status: "pending",
-            note: form.editNote?.value || "No reason provided"
+            note: form.editNote?.value || "هیچ هەمانەیەك نەدراوە"
           });
-          showSuccess("Edit request submitted!");
+          showSuccess("داواکردنی دەستکاری بۆ پەسەندکردن ناردوو");
         }
       } else {
         await addDoc(collection(db, "contributions"), data);
-        showSuccess("Contribution added!");
+        showSuccess("کۆکردنەکان بە سەرکەوتوویی زیادکرا");
       }
+
       setShowContributionForm(false);
       setEditingTransaction(null);
+      setImageFile(null);
+      setImageUrl("");
     } catch (error) {
-      console.error("Error:", error);
-      showSuccess("Operation failed", "error");
+      console.error("Error processing contribution:", error);
+      showSuccess("کارەکان ناکام بوو، تکایە دووبارە بکە", "error");
     } finally {
       setIsLoading(false);
     }
@@ -284,22 +401,34 @@ export default function FinanceApp() {
     e.preventDefault();
     setIsLoading(true);
     const form = e.target;
-    const data = {
-      date: form.date.value,
-      amount: Number(form.amount.value),
-      category: form.category.value,
-      note: form.description.value,
-      brother: currentUser.displayName || currentUser.email,
-      createdBy: currentUser.email,
-      status: isAdmin ? "approved" : "pending",
-      createdAt: new Date().toISOString()
-    };
-    
+
     try {
+      const db = getFirestore();
+      const storage = getStorage();
+      let imageUrl = "";
+
+      if (imageFile) {
+        const storageRef = ref(storage, `images/${imageFile.name}`);
+        await uploadBytes(storageRef, imageFile);
+        imageUrl = await getDownloadURL(storageRef);
+      }
+
+      const data = {
+        date: form.date.value,
+        amount: Number(form.amount.value),
+        category: form.category.value,
+        note: form.description.value,
+        brother: userData?.username || currentUser.email,
+        createdBy: currentUser.email,
+        status: isAdmin ? "approved" : "pending",
+        createdAt: new Date().toISOString(),
+        imageUrl: imageUrl
+      };
+
       if (editingTransaction) {
         if (isAdmin) {
           await updateDoc(doc(db, "expenses", editingTransaction.id), data);
-          showSuccess("Expense updated!");
+          showSuccess("مەسروفات سەرکاوتوو بوو");
         } else {
           await addDoc(collection(db, "pendingEdits"), {
             transactionId: editingTransaction.id,
@@ -308,19 +437,22 @@ export default function FinanceApp() {
             requestedBy: currentUser.email,
             requestedAt: new Date().toISOString(),
             status: "pending",
-            note: form.editNote?.value || "No reason provided"
+            note: form.editNote?.value || "هیچ هەمانەیەك نەدراوە"
           });
-          showSuccess("Edit request submitted!");
+          showSuccess("داواکردنی دەستکاری بۆ پەسەندکردن ناردوو");
         }
       } else {
         await addDoc(collection(db, "expenses"), data);
-        showSuccess("Expense added!");
+        showSuccess("مەسروفات بە سەرکەوتوویی زیادکرا");
       }
+
       setShowExpenseForm(false);
       setEditingTransaction(null);
+      setImageFile(null);
+      setImageUrl("");
     } catch (error) {
-      console.error("Error:", error);
-      showSuccess("Operation failed", "error");
+      console.error("Error processing expense:", error);
+      showSuccess("کارەکان ناکام بوو، تکایە دووبارە بکە", "error");
     } finally {
       setIsLoading(false);
     }
@@ -331,7 +463,7 @@ export default function FinanceApp() {
     return (
       <div className="min-h-screen bg-gray-900 flex items-center justify-center p-6">
         <div className="bg-gray-800 p-8 rounded-2xl shadow-xl w-full max-w-md">
-          <h2 className="text-2xl font-bold text-white mb-6 text-center">Login</h2>
+          <h2 className="text-2xl font-bold text-white mb-6 text-center">چوونەژووردنی بەکارهێنانی داتاکان</h2>
           {loginError && (
             <div className="bg-red-900/50 border-l-4 border-red-500 text-red-200 p-4 mb-4 rounded-lg">
               {loginError}
@@ -339,41 +471,51 @@ export default function FinanceApp() {
           )}
           <form onSubmit={handleLogin} className="space-y-5">
             <div>
-              <label htmlFor="username" className="block text-sm font-medium text-gray-300 mb-2">
-                Email
+              <label htmlFor="email" className="block text-sm font-medium text-gray-300 mb-2">
+                ئیمەیڵ
               </label>
               <input
                 type="email"
-                id="username"
-                name="username"
+                id="email"
+                name="email"
                 required
-                className="w-full px-4 py-3 bg-gray-700 border border-gray-600 rounded-xl focus:ring-2 focus:ring-blue-500 focus:border-blue-500 text-white"
+                placeholder="ئیمەیڵەکەت"
+                className="w-full px-4 py-3 bg-gray-700 border border-gray-600 rounded-xl focus:ring-2 focus:ring-blue-500 focus:border-blue-500 text-white placeholder-gray-400"
               />
             </div>
             <div className="relative">
               <label htmlFor="password" className="block text-sm font-medium text-gray-300 mb-2">
-                Password
+                تێپەڕوارد
               </label>
               <input
                 type={showPassword ? "text" : "password"}
                 id="password"
                 name="password"
                 required
-                className="w-full px-4 py-3 bg-gray-700 border border-gray-600 rounded-xl focus:ring-2 focus:ring-blue-500 focus:border-blue-500 text-white pr-12"
+                placeholder="••••••••"
+                className="w-full px-4 py-3 bg-gray-700 border border-gray-600 rounded-xl focus:ring-2 focus:ring-blue-500 focus:border-blue-500 text-white placeholder-gray-400 pr-12"
               />
               <button
                 type="button"
                 className="absolute right-3 top-[38px] text-gray-400 hover:text-white p-2"
                 onClick={() => setShowPassword(!showPassword)}
+                aria-label={showPassword ? "شاردنەوەی تێپەڕوارد" : "پیشاندانی تێپەڕوارد"}
               >
                 {showPassword ? <FaEyeSlash size={18} /> : <FaEye size={18} />}
               </button>
             </div>
             <button
               type="submit"
-              className="w-full bg-blue-600 hover:bg-blue-700 text-white py-3 px-4 rounded-xl transition flex items-center justify-center gap-3 text-lg"
+              disabled={isLoading}
+              className="w-full bg-blue-600 hover:bg-blue-700 text-white py-3 px-4 rounded-xl transition flex items-center justify-center gap-3 text-lg disabled:opacity-70"
             >
-              <FaSignInAlt size={18} /> Login
+              {isLoading ? (
+                <span className="loading loading-spinner loading-sm"></span>
+              ) : (
+                <>
+                  <FaSignInAlt size={18} /> چوونەژووردن
+                </>
+              )}
             </button>
           </form>
         </div>
@@ -381,10 +523,9 @@ export default function FinanceApp() {
     );
   }
 
-  // Dashboard Page
   return (
-    <div className="min-h-screen bg-gray-900 text-gray-100 p-4 md:p-6">
-      {/* Success Message */}
+    <div className="min-h-screen bg-gray-900 text-gray-100 p-4 md:p-6" style={{ fontFamily: "'NRT_Reg', sans-serif" }}>
+      {/* Success/Error Message */}
       {successMessage && (
         <div className={`fixed top-4 right-4 text-white px-5 py-3 rounded-xl shadow-lg z-50 animate-fade-in-out ${
           successType === "success" ? "bg-green-600" : "bg-red-600"
@@ -394,53 +535,64 @@ export default function FinanceApp() {
       )}
 
       {/* Header */}
-      <div className="flex flex-col md:flex-row justify-between items-start md:items-center gap-4 mb-8">
+      <header className="flex flex-col md:flex-row justify-between items-start md:items-center gap-4 mb-8">
         <div>
-          <h1 className="text-2xl md:text-3xl font-bold text-white">brakan</h1>
+          <h1 className="text-2xl md:text-3xl font-bold text-white" style={{ fontFamily: "'NRT_Bold', sans-serif" }}>داشبۆردی داتاکان</h1>
           <p className="text-gray-300">
-            Welcome, {currentUser.displayName || currentUser.email} {isAdmin && "(Admin)"}
+            بەخێربێی، {userData?.username || currentUser.email} {isAdmin && "(ئادمین)"}
+          </p>
+          <p className="text-gray-300">
+            چوونەژووردن بە {currentUser.email}
           </p>
         </div>
         <button
           onClick={handleLogout}
           className="flex items-center gap-2 text-gray-300 hover:text-red-400 px-4 py-2 rounded-xl transition"
+          aria-label="دەرچوون"
         >
-          <FaSignOutAlt size={18} /> Logout
+          <FaSignOutAlt size={18} /> دەرچوون
         </button>
-      </div>
+      </header>
 
       {/* Balance Summary */}
-      <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mb-8">
+      <section className="grid grid-cols-1 md:grid-cols-3 gap-4 mb-8">
         <div className="bg-gray-800 border border-gray-700 rounded-xl p-5 shadow-sm">
-          <h3 className="text-sm font-medium text-gray-400">Total Contributions</h3>
+          <h3 className="text-sm font-medium text-gray-400 flex items-center gap-2">
+            <FaWallet size={14} /> کۆی گشتی پارەدان
+          </h3>
           <p className="text-2xl md:text-3xl font-bold text-green-400">
             {totalContributions.toLocaleString("en-IQ")} IQD
           </p>
         </div>
         <div className="bg-gray-800 border border-gray-700 rounded-xl p-5 shadow-sm">
-          <h3 className="text-sm font-medium text-gray-400">Total Expenses</h3>
+          <h3 className="text-sm font-medium text-gray-400 flex items-center gap-2">
+            <FaMoneyBillWave size={14} /> کۆی گشتی خەرجی
+          </h3>
           <p className="text-2xl md:text-3xl font-bold text-red-400">
             {totalExpenses.toLocaleString("en-IQ")} IQD
           </p>
         </div>
         <div className="bg-gray-800 border border-gray-700 rounded-xl p-5 shadow-sm">
-          <h3 className="text-sm font-medium text-gray-400">Safe Balance</h3>
+          <h3 className="text-sm font-medium text-gray-400 flex items-center gap-2">
+            <FaWallet size={14} /> بڕی ماوە لە قاصە
+          </h3>
           <p className="text-2xl md:text-3xl font-bold text-blue-400">
             {safeBalance.toLocaleString("en-IQ")} IQD
           </p>
         </div>
-      </div>
+      </section>
 
       {/* Action Buttons */}
-      <div className="flex flex-wrap gap-3 mb-8">
+      <section className="flex flex-wrap gap-2 mb-8">
         <button
           onClick={() => {
             setEditingTransaction(null);
             setShowContributionForm(true);
           }}
           className="flex items-center gap-2 bg-green-600 hover:bg-green-700 text-white px-5 py-3 rounded-xl transition text-base"
+          aria-label="زیادکردنی کۆکردنەکان"
         >
-          <FaPlus size={16} /> Add Contribution
+          <FaPlus size={12} /> زیادکردنی کۆکردنەکان
         </button>
         <button
           onClick={() => {
@@ -448,8 +600,9 @@ export default function FinanceApp() {
             setShowExpenseForm(true);
           }}
           className="flex items-center gap-2 bg-red-600 hover:bg-red-700 text-white px-5 py-3 rounded-xl transition text-base"
+          aria-label="زیادکردنی مەسروفات"
         >
-          <FaMinus size={16} /> Add Expense
+          <FaMinus size={16} /> زیادکردنی مەسروفات
         </button>
         <button
           onClick={() => {
@@ -457,17 +610,9 @@ export default function FinanceApp() {
             setTimeout(() => scrollToSection(chartsRef), 50);
           }}
           className="flex items-center gap-2 bg-blue-600 hover:bg-blue-700 text-white px-5 py-3 rounded-xl transition text-base"
+          aria-label="پیشاندانی نەخشەکان"
         >
-          <FaChartBar size={16} /> Charts
-        </button>
-        <button
-          onClick={() => {
-            setShowHistory(true);
-            setTimeout(() => scrollToSection(historyRef), 50);
-          }}
-          className="flex items-center gap-2 bg-purple-600 hover:bg-purple-700 text-white px-5 py-3 rounded-xl transition text-base"
-        >
-          <FaHistory size={16} /> History
+          <FaChartBar size={16} /> پیشاندانی نەخشەکان
         </button>
         {isAdmin && (
           <button
@@ -476,35 +621,39 @@ export default function FinanceApp() {
               setTimeout(() => scrollToSection(pendingRef), 50);
             }}
             className="flex items-center gap-2 bg-yellow-600 hover:bg-yellow-700 text-white px-5 py-3 rounded-xl transition text-base"
+            aria-label="پیشاندانی پەسەندکراوەکان"
           >
-            <FaClock size={16} /> Pending
+            <FaClock size={16} /> پیشاندانی پەسەندکراوەکان
           </button>
         )}
-      </div>
+      </section>
 
       {/* Filter Controls */}
-      <div className="mb-8">
+      <section className="mb-8">
         <button
           onClick={() => setShowFilters(!showFilters)}
           className="flex items-center gap-2 bg-gray-800 hover:bg-gray-700 text-gray-100 px-5 py-3 rounded-xl border border-gray-700 transition w-full justify-center mb-4"
+          aria-expanded={showFilters}
+          aria-controls="filter-section"
         >
-          <FaFilter size={16} /> {showFilters ? "Hide Filters" : "Show Filters"}
+          <FaFilter size={16} /> {showFilters ? "شاردنەوەی فیلتەرەکان" : "پیشاندانی فیلتەرەکان"}
         </button>
 
         {showFilters && (
-          <div className="bg-gray-800 p-5 rounded-xl border border-gray-700 shadow-sm space-y-5">
+          <div id="filter-section" className="bg-gray-800 p-5 rounded-xl border border-gray-700 shadow-sm space-y-5">
             <div className="grid grid-cols-1 md:grid-cols-2 gap-5">
               <div>
                 <label className="block text-sm font-medium text-gray-300 mb-2">
-                  Date Range
+                  بەرواری تراکنشن
                 </label>
                 <div className="space-y-3">
                   <div className="relative">
                     <input
                       type="date"
                       value={dateRange.start}
-                      onChange={(e) => setDateRange({...dateRange, start: e.target.value})}
+                      onChange={(e) => setDateRange({ ...dateRange, start: e.target.value })}
                       className="w-full px-4 py-3 bg-gray-700 border border-gray-600 rounded-xl focus:ring-2 focus:ring-blue-500 focus:border-blue-500 text-white"
+                      aria-label="بەرواری دەستپێکردن"
                     />
                     <FaCalendarAlt className="absolute right-4 top-3.5 text-gray-400" />
                   </div>
@@ -512,8 +661,9 @@ export default function FinanceApp() {
                     <input
                       type="date"
                       value={dateRange.end}
-                      onChange={(e) => setDateRange({...dateRange, end: e.target.value})}
+                      onChange={(e) => setDateRange({ ...dateRange, end: e.target.value })}
                       className="w-full px-4 py-3 bg-gray-700 border border-gray-600 rounded-xl focus:ring-2 focus:ring-blue-500 focus:border-blue-500 text-white"
+                      aria-label="بەرواری کۆتایی"
                     />
                     <FaCalendarAlt className="absolute right-4 top-3.5 text-gray-400" />
                   </div>
@@ -522,36 +672,100 @@ export default function FinanceApp() {
 
               <div>
                 <label htmlFor="filterType" className="block text-sm font-medium text-gray-300 mb-2">
-                  Transaction Type
+                  جۆری تراکنشن
                 </label>
                 <select
                   id="filterType"
                   value={filterType}
                   onChange={(e) => setFilterType(e.target.value)}
                   className="w-full px-4 py-3 bg-gray-700 border border-gray-600 rounded-xl focus:ring-2 focus:ring-blue-500 focus:border-blue-500 text-white"
+                  aria-label="فیلتەرکردن لەلایەن جۆری تراكنشن"
                 >
-                  <option value="all">All Transactions</option>
-                  <option value="deposit">Contributions</option>
-                  <option value="expense">Expenses</option>
+                  <option value="all">هەموو تراكنشنەکان</option>
+                  <option value="deposit">كۆکردنەکان</option>
+                  <option value="expense">مەسروفات</option>
                 </select>
               </div>
 
               <div>
                 <label htmlFor="filterCategory" className="block text-sm font-medium text-gray-300 mb-2">
-                  Category
+                  كاتێگۆری
                 </label>
                 <select
                   id="filterCategory"
                   value={filterCategory}
                   onChange={(e) => setFilterCategory(e.target.value)}
                   className="w-full px-4 py-3 bg-gray-700 border border-gray-600 rounded-xl focus:ring-2 focus:ring-blue-500 focus:border-blue-500 text-white"
+                  aria-label="فیلتەرکردن لەلایەن كاتێگۆری"
                 >
-                  <option value="all">All Categories</option>
+                  <option value="all">هەموو كاتێگۆریەکان</option>
                   {expenseCategories.map(category => (
                     <option key={category} value={category}>{category}</option>
                   ))}
-                  <option value="Contribution">Contributions</option>
+                  <option value="Contribution">كۆکردنەکان</option>
                 </select>
+              </div>
+
+              <div>
+                <label className="block text-sm font-medium text-gray-300 mb-2">
+                  بڕی پارە
+                </label>
+                <div className="flex items-center gap-4">
+                  <input
+                    type="range"
+                    min="250"
+                    max="1000000"
+                    value={amountRange[0]}
+                    onChange={(e) => setAmountRange([Number(e.target.value), amountRange[1]])}
+                    className="w-full"
+                  />
+                  <span className="text-gray-400 mt-2">{amountRange[0].toLocaleString("en-IQ")} IQD</span>
+                </div>
+                <div className="flex items-center gap-4 mt-4">
+                  <input
+                    type="range"
+                    min="250"
+                    max="1000000"
+                    value={amountRange[1]}
+                    onChange={(e) => setAmountRange([amountRange[0], Number(e.target.value)])}
+                    className="w-full"
+                  />
+                  <span className="text-gray-400 mt-2">{amountRange[1].toLocaleString("en-IQ")} IQD</span>
+                </div>
+                <div className="flex items-center gap-4 mt-4">
+                  <input
+                    type="number"
+                    min="250"
+                    max="1000000"
+                    value={amountRange[0]}
+                    onChange={(e) => setAmountRange([Number(e.target.value), amountRange[1]])}
+                    className="w-1/2 px-4 py-3 bg-gray-700 border border-gray-600 rounded-xl focus:ring-2 focus:ring-blue-500 focus:border-blue-500 text-white placeholder-gray-400"
+                    placeholder="بڕی کەم"
+                  />
+                  <input
+                    type="number"
+                    min="250"
+                    max="1000000"
+                    value={amountRange[1]}
+                    onChange={(e) => setAmountRange([amountRange[0], Number(e.target.value)])}
+                    className="w-1/2 px-4 py-3 bg-gray-700 border border-gray-600 rounded-xl focus:ring-2 focus:ring-blue-500 focus:border-blue-500 text-white placeholder-gray-400"
+                    placeholder="بڕی زۆر"
+                  />
+                </div>
+              </div>
+
+              <div>
+                <label htmlFor="searchNote" className="block text-sm font-medium text-gray-300 mb-2">
+                  گەڕان لە تێبینی
+                </label>
+                <input
+                  type="text"
+                  id="searchNote"
+                  value={searchNote}
+                  onChange={(e) => setSearchNote(e.target.value)}
+                  placeholder="گەڕان لە تێبینی"
+                  className="w-full px-4 py-3 bg-gray-700 border border-gray-600 rounded-xl focus:ring-2 focus:ring-blue-500 focus:border-blue-500 text-white placeholder-gray-400"
+                />
               </div>
             </div>
 
@@ -559,35 +773,41 @@ export default function FinanceApp() {
               <button
                 onClick={clearFilters}
                 className="text-sm text-blue-400 hover:text-blue-300 flex items-center gap-2"
+                aria-label="پاككردنی هەموو فیلتەرەکان"
               >
-                <FaTimes size={14} /> Clear all filters
+                <FaTimes size={14} /> پاككردنی هەموو فیلتەرەکان
               </button>
-              {(dateRange.start || dateRange.end) && (
+              {(dateRange.start || dateRange.end || amountRange[0] || amountRange[1]) && (
                 <button
-                  onClick={() => setDateRange({ start: "", end: "" })}
+                  onClick={() => {
+                    setDateRange({ start: "", end: "" });
+                    setAmountRange([250, 1000000]);
+                  }}
                   className="text-sm text-blue-400 hover:text-blue-300 flex items-center gap-2"
+                  aria-label="پاككردنی فیلتەری بەرواری"
                 >
-                  <FaTimes size={14} /> Clear dates
+                  <FaTimes size={14} /> پاككردنی بەرواری
                 </button>
               )}
             </div>
           </div>
         )}
-      </div>
+      </section>
 
       {/* Transactions List */}
-      <div className="mb-8">
-        <h2 className="text-xl font-bold text-white mb-5">Transactions</h2>
+      <section className="mb-8">
+        <h2 className="text-xl font-bold text-white mb-5">خەرجی و داهات</h2>
         <div className="space-y-4">
-          {filteredTransactions.length > 0 ? (
-            filteredTransactions.map((t, index) => (
-              <div 
-                key={index} 
+          {currentTransactions.length > 0 ? (
+            currentTransactions.map((t, index) => (
+              <div
+                key={index}
                 className="bg-gray-800 rounded-xl border border-gray-700 p-5 shadow-sm hover:shadow-md transition"
               >
+                {/* Transaction header */}
                 <div className="flex justify-between items-start mb-4">
                   <div>
-                    <h3 className="font-medium text-white">{t.brother}</h3>
+                    <h3 className="font-medium text-white">{t.brother || "ناشناس"}</h3>
                     <p className="text-sm text-gray-400">{t.formattedDate}</p>
                   </div>
                   <span className={`px-3 py-1.5 rounded-full text-xs font-medium ${
@@ -597,434 +817,241 @@ export default function FinanceApp() {
                   </span>
                 </div>
 
+                {/* Transaction details */}
                 <div className="grid grid-cols-2 gap-4 mb-4">
                   <div>
-                    <p className="text-xs text-gray-500 mb-1">Amount</p>
-                    <p className="font-medium text-white">{t.amount}</p>
+                    <p className="text-xs text-gray-500 mb-1">بڕی پارە</p>
+                    <p className="font-medium text-white">{t.formattedAmount}</p>
                   </div>
                   <div>
-                    <p className="text-xs text-gray-500 mb-1">Category</p>
-                    <p className="font-medium text-white">{t.category}</p>
+                    <p className="text-xs text-gray-500 mb-1">كاتێگۆری</p>
+                    <p className="font-medium text-white">{t.category || "بێ كاتێگۆری"}</p>
                   </div>
                 </div>
 
+                {/* Transaction note */}
                 {t.note && (
                   <div className="mb-4">
-                    <p className="text-xs text-gray-500 mb-1">Note</p>
+                    <p className="text-xs text-gray-500 mb-1">تێبینی</p>
                     <p className="text-sm text-gray-300">{t.note}</p>
                   </div>
                 )}
 
-                <div className="flex justify-between items-center pt-4 border-t border-gray-700">
-                  <div>
-                    {t.status === "pending" ? (
-                      <span className="px-3 py-1 rounded-full text-xs font-medium bg-yellow-900/50 text-yellow-400">
-                        Pending
-                      </span>
-                    ) : t.pendingDeletion ? (
-                      <span className="px-3 py-1 rounded-full text-xs font-medium bg-purple-900/50 text-purple-400">
-                        Delete Requested
-                      </span>
-                    ) : t.pendingEdit ? (
-                      <span className="px-3 py-1 rounded-full text-xs font-medium bg-orange-900/50 text-orange-400">
-                        Edit Requested
-                      </span>
-                    ) : (
-                      <span className="px-3 py-1 rounded-full text-xs font-medium bg-green-900/50 text-green-400">
-                        Approved
-                      </span>
-                    )}
+                {/* Transaction image */}
+                {t.imageUrl && (
+                  <div className="mb-4">
+                    <p className="text-xs text-gray-500 mb-1">وێنە</p>
+                    <Image src={t.imageUrl} alt="Transaction" className="w-full h-40 object-cover rounded-lg" />
+                    <button
+                      onClick={() => {
+                        setSelectedImageUrl(t.imageUrl);
+                        setShowImageModal(true);
+                      }}
+                      className="mt-2 text-sm text-blue-400 hover:text-blue-300 flex items-center gap-2"
+                    >
+                      <FaEye size={14} /> پیشاندانی وێنە
+                    </button>
                   </div>
+                )}
 
-                  <div className="flex gap-3">
-                    {t.status === "pending" && isAdmin && (
-                      <>
-                        <button
-                          onClick={() => {
-                            const collection = t.type === "Deposit" ? "contributions" : "expenses";
-                            updateDoc(doc(db, collection, t.id), { status: "approved" });
-                            showSuccess("Transaction approved");
-                          }}
-                          className="text-green-500 hover:text-green-400 p-2"
-                          title="Approve"
-                        >
-                          <FaCheck size={18} />
-                        </button>
-                        <button
-                          onClick={() => {
-                            const collection = t.type === "Deposit" ? "contributions" : "expenses";
-                            deleteDoc(doc(db, collection, t.id));
-                            showSuccess("Transaction rejected");
-                          }}
-                          className="text-red-500 hover:text-red-400 p-2"
-                          title="Reject"
-                        >
-                          <FaTimes size={18} />
-                        </button>
-                      </>
-                    )}
-                    {t.pendingDeletion && isAdmin && (
-                      <>
-                        <button
-                          onClick={() => {
-                            deleteDoc(doc(db, t.pendingDeletion.collectionName, t.pendingDeletion.transactionId));
-                            deleteDoc(doc(db, "pendingDeletions", t.pendingDeletion.id));
-                            showSuccess("Deletion approved");
-                          }}
-                          className="text-green-500 hover:text-green-400 p-2"
-                          title="Approve Deletion"
-                        >
-                          <FaCheck size={18} />
-                        </button>
-                        <button
-                          onClick={() => {
-                            deleteDoc(doc(db, "pendingDeletions", t.pendingDeletion.id));
-                            showSuccess("Deletion rejected");
-                          }}
-                          className="text-red-500 hover:text-red-400 p-2"
-                          title="Reject Deletion"
-                        >
-                          <FaTimes size={18} />
-                        </button>
-                      </>
-                    )}
-                    {t.pendingEdit && isAdmin && (
-                      <>
-                        <button
-                          onClick={() => {
-                            updateDoc(doc(db, t.pendingEdit.collectionName, t.pendingEdit.transactionId), t.pendingEdit.newData);
-                            deleteDoc(doc(db, "pendingEdits", t.pendingEdit.id));
-                            showSuccess("Edit approved");
-                          }}
-                          className="text-green-500 hover:text-green-400 p-2"
-                          title="Approve Edit"
-                        >
-                          <FaCheck size={18} />
-                        </button>
-                        <button
-                          onClick={() => {
-                            deleteDoc(doc(db, "pendingEdits", t.pendingEdit.id));
-                            showSuccess("Edit rejected");
-                          }}
-                          className="text-red-500 hover:text-red-400 p-2"
-                          title="Reject Edit"
-                        >
-                          <FaTimes size={18} />
-                        </button>
-                      </>
-                    )}
-                    {t.status === "approved" && !t.pendingDeletion && !t.pendingEdit && (
-                      <button
-                        onClick={() => {
-                          const reason = prompt("Reason for deletion:");
-                          if (reason) {
-                            handleDeleteRequest(t, reason);
-                          }
-                        }}
-                        className="text-red-500 hover:text-red-400 p-2"
-                        title="Delete"
-                      >
-                        <FaTrash size={18} />
-                      </button>
-                    )}
-                    {(t.createdBy === currentUser.email || isAdmin) && (
+                {/* Transaction status and actions */}
+                <div className="flex flex-wrap gap-2 pt-4 border-t border-gray-700">
+                  {/* Status badges */}
+                  {t.status === "pending" && (
+                    <span className="px-3 py-1 rounded-full text-xs font-medium bg-yellow-900/50 text-yellow-400">
+                      چاوەڕوانی پەسەند
+                    </span>
+                  )}
+                  {t.pendingEdit && (
+                    <span className="px-3 py-1 rounded-full text-xs font-medium bg-blue-900/50 text-blue-400">
+                      داواکردنی دەستکاری
+                    </span>
+                  )}
+                  {t.pendingDeletion && (
+                    <span className="px-3 py-1 rounded-full text-xs font-medium bg-red-900/50 text-red-400">
+                      داواکردنی سڕینەوە
+                    </span>
+                  )}
+
+                  {/* Action buttons */}
+                  <div className="flex gap-2 ml-auto">
+                    {/* Edit button - shown if no pending edit and user is creator or admin */}
+                    {!t.pendingEdit && (t.createdBy === currentUser.email || isAdmin) && (
                       <button
                         onClick={() => {
                           setEditingTransaction(t);
-                          t.type === "Deposit" 
-                            ? setShowContributionForm(true) 
-                            : setShowExpenseForm(true);
+                          if (t.type === "Deposit") {
+                            setShowContributionForm(true);
+                          } else {
+                            setShowExpenseForm(true);
+                          }
                         }}
-                        className="text-blue-500 hover:text-blue-400 p-2"
-                        title="Edit"
+                        className="flex items-center gap-1.5 text-xs bg-gray-700 hover:bg-gray-600 text-gray-100 px-3 py-1.5 rounded-lg transition"
+                        aria-label="دەستکاری"
                       >
-                        <FaEdit size={18} />
+                        <FaEdit size={12} /> دەستکاری
+                      </button>
+                    )}
+
+                    {/* Delete button - shown if no pending deletion and user is creator or admin */}
+                    {!t.pendingDeletion && (t.createdBy === currentUser.email || isAdmin) && (
+                      <button
+                        onClick={() => {
+                          setEditingTransaction(t);
+                          setDeleteReason("");
+                        }}
+                        className="flex items-center gap-1.5 text-xs bg-red-800 hover:bg-red-400 text-gray-100 px-3 py-1.5 rounded-lg transition"
+                        aria-label="سڕینەوە"
+                      >
+                        <FaTrash size={12} /> سڕینەوە
                       </button>
                     )}
                   </div>
                 </div>
+
+                {/* Delete confirmation modal */}
+                {editingTransaction?.id === t.id && (
+                  <div className="mt-4 p-4 bg-gray-700 rounded-lg">
+                    <h4 className="text-sm font-medium mb-2">سڕینەوەی تراکنشن</h4>
+                    <p className="text-xs text-gray-300 mb-3">
+                      ئایا دڵنیای لە سڕینەوەی ئەم تراکنشنە؟ ئەم کارە ناتوانرێت هەڵوەشێنرێتەوە.
+                    </p>
+                    <textarea
+                      value={deleteReason}
+                      onChange={(e) => setDeleteReason(e.target.value)}
+                      placeholder="هۆکاری سڕینەوە (پێویستە)"
+                      className="w-full px-3 py-2 bg-gray-600 border border-gray-500 rounded-lg text-white text-xs mb-3"
+                      rows={2}
+                    />
+                    <div className="flex gap-2">
+                      <button
+                        onClick={() => handleDeleteRequest(t)}
+                        disabled={!deleteReason || isLoading}
+                        className="flex items-center gap-1.5 text-xs bg-red-600 hover:bg-red-500 text-white px-3 py-1.5 rounded-lg transition disabled:opacity-50"
+                      >
+                        {isLoading ? (
+                          <span className="loading loading-spinner loading-xs"></span>
+                        ) : (
+                          <>
+                            <FaTrash size={12} /> بەڵێ، بسڕەوە
+                          </>
+                        )}
+                      </button>
+                      <button
+                        onClick={() => setEditingTransaction(null)}
+                        className="flex items-center gap-1.5 text-xs bg-gray-600 hover:bg-gray-500 text-white px-3 py-1.5 rounded-lg transition"
+                      >
+                        <FaTimes size={12} /> پاشگەزبوونەوە
+                      </button>
+                    </div>
+                  </div>
+                )}
               </div>
             ))
           ) : (
-            <div className="bg-gray-800 rounded-xl border border-gray-700 p-6 text-center text-gray-400">
-              No transactions found matching your criteria
+            <div className="bg-gray-800 rounded-xl border border-gray-700 p-8 text-center">
+              <p className="text-gray-400">هیچ تراکنشنێک نەدۆزرایەوە</p>
             </div>
           )}
         </div>
-      </div>
 
-      {/* Charts Section */}
-      {showCharts && (
-        <div ref={chartsRef} className="mb-10">
-          <div className="flex justify-between items-center mb-6">
-            <h2 className="text-xl font-bold text-white">Charts & Analytics</h2>
+        {/* Pagination Controls */}
+        <div className="flex justify-center mt-6">
+          {Array.from({ length: Math.ceil(filteredTransactions.length / transactionsPerPage) }, (_, i) => (
             <button
-              onClick={() => setShowCharts(false)}
-              className="text-gray-400 hover:text-white p-2"
+              key={i}
+              onClick={() => paginate(i + 1)}
+              className={`mx-1 px-3 py-2 rounded-lg ${
+                currentPage === i + 1 ? "bg-blue-600 text-white" : "bg-gray-700 text-gray-300 hover:bg-gray-600"
+              } transition`}
             >
-              <FaTimes size={20} />
+              {i + 1}
             </button>
-          </div>
-          <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-            {/* Expense Categories Bar Chart */}
-            {expenses.length > 0 && (
-              <div className="bg-gray-800 rounded-xl border border-gray-700 p-5 shadow-sm">
-                <h3 className="text-lg font-semibold text-white mb-5">Expense Distribution</h3>
-                <div className="relative h-80">
-                  <Bar
-                    data={{
-                      labels: expenseCategories,
-                      datasets: [{
-                        label: "Amount (IQD)",
-                        data: expenseCategories.map(category =>
-                          expenses
-                            .filter(e => e.category === category)
-                            .reduce((sum, item) => sum + item.amount, 0)
-                        ),
-                        backgroundColor: "#6366f1",
-                        borderColor: "#6366f1",
-                        borderWidth: 2,
-                        borderRadius: 6,
-                      }],
-                    }}
-                    options={{
-                      responsive: true,
-                      maintainAspectRatio: false,
-                      plugins: {
-                        legend: { display: false },
-                        tooltip: {
-                          backgroundColor: '#1f2937',
-                          titleColor: '#f3f4f6',
-                          bodyColor: '#f3f4f6',
-                          borderColor: '#4b5563',
-                          borderWidth: 1,
-                          callbacks: {
-                            label: (context) => `${context.parsed.y.toLocaleString("en-IQ")} IQD`,
-                          },
-                        },
-                      },
-                      scales: {
-                        y: {
-                          beginAtZero: true,
-                          grid: {
-                            color: '#374151',
-                          },
-                          ticks: {
-                            color: '#9ca3af',
-                            callback: (value) => `${value.toLocaleString("en-IQ")} IQD`,
-                          },
-                        },
-                        x: {
-                          grid: {
-                            color: '#374151',
-                          },
-                          ticks: {
-                            color: '#9ca3af',
-                          },
-                        },
-                      },
-                    }}
-                  />
-                </div>
-              </div>
-            )}
-
-            {/* Expense Categories Pie Chart */}
-            {expenses.length > 0 && (
-              <div className="bg-gray-800 rounded-xl border border-gray-700 p-5 shadow-sm">
-                <h3 className="text-lg font-semibold text-white mb-5">Expense Categories</h3>
-                <div className="relative h-80">
-                  <Pie
-                    data={{
-                      labels: expenseCategories,
-                      datasets: [{
-                        data: expenseCategories.map(category =>
-                          expenses
-                            .filter(e => e.category === category)
-                            .reduce((sum, item) => sum + item.amount, 0)
-                        ),
-                        backgroundColor: [
-                          '#6366f1', '#8b5cf6', '#a855f7', '#d946ef', 
-                          '#ec4899', '#f43f5e', '#ef4444', '#f97316'
-                        ],
-                        borderColor: '#1f2937',
-                        borderWidth: 2,
-                      }],
-                    }}
-                    options={{
-                      responsive: true,
-                      maintainAspectRatio: false,
-                      plugins: {
-                        legend: { 
-                          position: 'right',
-                          labels: {
-                            color: '#f3f4f6',
-                            padding: 20,
-                            font: {
-                              size: 12
-                            }
-                          }
-                        },
-                        tooltip: {
-                          backgroundColor: '#1f2937',
-                          titleColor: '#f3f4f6',
-                          bodyColor: '#f3f4f6',
-                          borderColor: '#4b5563',
-                          borderWidth: 1,
-                          callbacks: {
-                            label: (context) => {
-                              const value = context.raw;
-                              const total = context.dataset.data.reduce((a, b) => a + b, 0);
-                              const percentage = Math.round((value / total) * 100);
-                              return `${context.label}: ${value.toLocaleString("en-IQ")} IQD (${percentage}%)`;
-                            },
-                          },
-                        },
-                      },
-                      elements: {
-                        arc: {
-                          borderRadius: 10,
-                        }
-                      }
-                    }}
-                  />
-                </div>
-              </div>
-            )}
-          </div>
+          ))}
         </div>
-      )}
-
-      {/* History Section */}
-      {showHistory && (
-        <div ref={historyRef} className="mb-10">
-          <div className="flex justify-between items-center mb-6">
-            <h2 className="text-xl font-bold text-white">Transaction History</h2>
-            <button
-              onClick={() => setShowHistory(false)}
-              className="text-gray-400 hover:text-white p-2"
-            >
-              <FaTimes size={20} />
-            </button>
-          </div>
-          <div className="space-y-4">
-            {transactionHistory.length > 0 ? (
-              transactionHistory.map((t, index) => (
-                <div 
-                  key={index} 
-                  className="bg-gray-800 rounded-xl border border-gray-700 p-5 shadow-sm hover:shadow-md transition"
-                >
-                  <div className="flex justify-between items-start mb-4">
-                    <div>
-                      <h3 className="font-medium text-white">{t.action} by {t.user}</h3>
-                      <p className="text-sm text-gray-400">
-                        {t.timestamp ? format(new Date(t.timestamp), "dd/MM/yyyy HH:mm") : "No date"}
-                      </p>
-                    </div>
-                    <span className={`px-3 py-1.5 rounded-full text-xs font-medium ${
-                      t.actionType === "create" ? "bg-blue-900/50 text-blue-400" :
-                      t.actionType === "update" ? "bg-yellow-900/50 text-yellow-400" :
-                      "bg-red-900/50 text-red-400"
-                    }`}>
-                      {t.actionType}
-                    </span>
-                  </div>
-
-                  <div className="mb-4">
-                    <p className="text-xs text-gray-500 mb-1">Details</p>
-                    <p className="text-sm text-gray-300">{t.details}</p>
-                  </div>
-
-                  {t.note && (
-                    <div className="mb-4">
-                      <p className="text-xs text-gray-500 mb-1">Note</p>
-                      <p className="text-sm text-gray-300">{t.note}</p>
-                    </div>
-                  )}
-                </div>
-              ))
-            ) : (
-              <div className="bg-gray-800 rounded-xl border border-gray-700 p-6 text-center text-gray-400">
-                No history records found
-              </div>
-            )}
-          </div>
-        </div>
-      )}
+      </section>
 
       {/* Pending Approvals Section */}
       {isAdmin && showPendingApprovals && (
-        <div ref={pendingRef} className="mb-10">
-          <div className="flex justify-between items-center mb-6">
-            <h2 className="text-xl font-bold text-white">Pending Approvals</h2>
-            <button
-              onClick={() => setShowPendingApprovals(false)}
-              className="text-gray-400 hover:text-white p-2"
-            >
-              <FaTimes size={20} />
-            </button>
-          </div>
+        <section ref={pendingRef} className="mb-8">
+          <h2 className="text-xl font-bold text-white mb-5 flex items-center gap-2">
+            <FaClock size={20} /> داواکاریە چاوەڕوانەکان
+          </h2>
 
           {/* Pending Contributions */}
           {pendingContributions.length > 0 && (
-            <div className="mb-8">
-              <h3 className="text-lg font-semibold text-white mb-4">Contributions ({pendingContributions.length})</h3>
+            <div className="mb-6">
+              <h3 className="text-lg font-medium text-white mb-3">کۆکردنەوەی چاوەڕوان</h3>
               <div className="space-y-4">
-                {pendingContributions.map((t, index) => (
-                  <div 
-                    key={index} 
-                    className="bg-gray-800 rounded-xl border border-gray-700 p-5 shadow-sm hover:shadow-md transition"
-                  >
-                    <div className="flex justify-between items-start mb-4">
+                {pendingContributions.map((contribution, index) => (
+                  <div key={index} className="bg-gray-800 rounded-xl border border-gray-700 p-5 shadow-sm">
+                    <div className="flex justify-between items-start mb-3">
                       <div>
-                        <h3 className="font-medium text-white">{t.brother}</h3>
+                        <h4 className="font-medium text-white">{contribution.brother || "ناشناس"}</h4>
                         <p className="text-sm text-gray-400">
-                          {t.date ? format(new Date(t.date), "dd/MM/yyyy") : "No date"}
+                          {contribution.date ? format(new Date(contribution.date), "dd/MM/yyyy") : "بێ بەروار"}
                         </p>
                       </div>
-                      <span className="px-3 py-1.5 rounded-full text-xs font-medium bg-yellow-900/50 text-yellow-400">
-                        Pending
+                      <span className="px-3 py-1 rounded-full text-xs font-medium bg-yellow-900/50 text-yellow-400">
+                        چاوەڕوانی پەسەند
                       </span>
                     </div>
-
-                    <div className="grid grid-cols-2 gap-4 mb-4">
+                    <div className="grid grid-cols-2 gap-4 mb-3">
                       <div>
-                        <p className="text-xs text-gray-500 mb-1">Amount</p>
-                        <p className="font-medium text-white">
-                          {t.amount.toLocaleString("en-IQ")} IQD
+                        <p className="text-xs text-gray-500 mb-1">بڕی پارە</p>
+                        <p className="font-medium text-green-400">
+                          {contribution.amount.toLocaleString("en-IQ")} IQD
                         </p>
                       </div>
                       <div>
-                        <p className="text-xs text-gray-500 mb-1">Category</p>
-                        <p className="font-medium text-white">Contribution</p>
+                        <p className="text-xs text-gray-500 mb-1">زیادکراوە لەلایەن</p>
+                        <p className="font-medium text-white">{contribution.createdBy}</p>
                       </div>
                     </div>
-
-                    {t.note && (
-                      <div className="mb-4">
-                        <p className="text-xs text-gray-500 mb-1">Note</p>
-                        <p className="text-sm text-gray-300">{t.note}</p>
+                    {contribution.note && (
+                      <div className="mb-3">
+                        <p className="text-xs text-gray-500 mb-1">تێبینی</p>
+                        <p className="text-sm text-gray-300">{contribution.note}</p>
                       </div>
                     )}
-
-                    <div className="flex justify-end gap-3 pt-4 border-t border-gray-700">
+                    {contribution.imageUrl && (
+                      <div className="mb-3">
+                        <p className="text-xs text-gray-500 mb-1">وێنە</p>
+                        <Image src={contribution.imageUrl} alt="Transaction" className="w-full h-40 object-cover rounded-lg" />
+                      </div>
+                    )}
+                    <div className="flex gap-2 pt-3 border-t border-gray-700">
                       <button
-                        onClick={() => {
-                          updateDoc(doc(db, "contributions", t.id), { status: "approved" });
-                          showSuccess("Contribution approved");
+                        onClick={async () => {
+                          try {
+                            const db = getFirestore();
+                            await updateDoc(doc(db, "contributions", contribution.id), {
+                              status: "approved"
+                            });
+                            showSuccess("کۆکردنەوە پەسەندکرا");
+                          } catch (error) {
+                            console.error("Error approving contribution:", error);
+                            showSuccess("هەڵە لە پەسەندکردنی کۆکردنەوە", "error");
+                          }
                         }}
-                        className="flex items-center gap-2 bg-green-600 hover:bg-green-700 text-white px-4 py-2 rounded-xl transition text-sm"
+                        className="flex items-center gap-1.5 text-xs bg-green-600 hover:bg-green-500 text-white px-3 py-1.5 rounded-lg transition"
                       >
-                        <FaCheck size={14} /> Approve
+                        <FaCheck size={12} /> پەسەندکردن
                       </button>
                       <button
-                        onClick={() => {
-                          deleteDoc(doc(db, "contributions", t.id));
-                          showSuccess("Contribution rejected");
+                        onClick={async () => {
+                          try {
+                            const db = getFirestore();
+                            await deleteDoc(doc(db, "contributions", contribution.id));
+                            showSuccess("کۆکردنەوە ڕەتکرایەوە");
+                          } catch (error) {
+                            console.error("Error rejecting contribution:", error);
+                            showSuccess("هەڵە لە ڕەتکردنەوەی کۆکردنەوە", "error");
+                          }
                         }}
-                        className="flex items-center gap-2 bg-red-600 hover:bg-red-700 text-white px-4 py-2 rounded-xl transition text-sm"
+                        className="flex items-center gap-1.5 text-xs bg-red-600 hover:bg-red-500 text-white px-3 py-1.5 rounded-lg transition"
                       >
-                        <FaTimes size={14} /> Reject
+                        <FaTimes size={12} /> ڕەتکردنەوە
                       </button>
                     </div>
                   </div>
@@ -1035,118 +1062,78 @@ export default function FinanceApp() {
 
           {/* Pending Expenses */}
           {pendingExpenses.length > 0 && (
-            <div className="mb-8">
-              <h3 className="text-lg font-semibold text-white mb-4">Expenses ({pendingExpenses.length})</h3>
+            <div className="mb-6">
+              <h3 className="text-lg font-medium text-white mb-3">مەسروفاتی چاوەڕوان</h3>
               <div className="space-y-4">
-                {pendingExpenses.map((t, index) => (
-                  <div 
-                    key={index} 
-                    className="bg-gray-800 rounded-xl border border-gray-700 p-5 shadow-sm hover:shadow-md transition"
-                  >
-                    <div className="flex justify-between items-start mb-4">
+                {pendingExpenses.map((expense, index) => (
+                  <div key={index} className="bg-gray-800 rounded-xl border border-gray-700 p-5 shadow-sm">
+                    <div className="flex justify-between items-start mb-3">
                       <div>
-                        <h3 className="font-medium text-white">{t.brother}</h3>
+                        <h4 className="font-medium text-white">{expense.brother || "ناشناس"}</h4>
                         <p className="text-sm text-gray-400">
-                          {t.date ? format(new Date(t.date), "dd/MM/yyyy") : "No date"}
+                          {expense.date ? format(new Date(expense.date), "dd/MM/yyyy") : "بێ بەروار"}
                         </p>
                       </div>
-                      <span className="px-3 py-1.5 rounded-full text-xs font-medium bg-yellow-900/50 text-yellow-400">
-                        Pending
+                      <span className="px-3 py-1 rounded-full text-xs font-medium bg-yellow-900/50 text-yellow-400">
+                        چاوەڕوانی پەسەند
                       </span>
                     </div>
-
-                    <div className="grid grid-cols-2 gap-4 mb-4">
+                    <div className="grid grid-cols-2 gap-4 mb-3">
                       <div>
-                        <p className="text-xs text-gray-500 mb-1">Amount</p>
-                        <p className="font-medium text-white">
-                          {t.amount.toLocaleString("en-IQ")} IQD
+                        <p className="text-xs text-gray-500 mb-1">بڕی پارە</p>
+                        <p className="font-medium text-red-400">
+                          {expense.amount.toLocaleString("en-IQ")} IQD
                         </p>
                       </div>
                       <div>
-                        <p className="text-xs text-gray-500 mb-1">Category</p>
-                        <p className="font-medium text-white">{t.category}</p>
+                        <p className="text-xs text-gray-500 mb-1">كاتێگۆری</p>
+                        <p className="font-medium text-white">{expense.category}</p>
                       </div>
                     </div>
-
-                    {t.note && (
-                      <div className="mb-4">
-                        <p className="text-xs text-gray-500 mb-1">Note</p>
-                        <p className="text-sm text-gray-300">{t.note}</p>
+                    {expense.note && (
+                      <div className="mb-3">
+                        <p className="text-xs text-gray-500 mb-1">تێبینی</p>
+                        <p className="text-sm text-gray-300">{expense.note}</p>
                       </div>
                     )}
-
-                    <div className="flex justify-end gap-3 pt-4 border-t border-gray-700">
-                      <button
-                        onClick={() => {
-                          updateDoc(doc(db, "expenses", t.id), { status: "approved" });
-                          showSuccess("Expense approved");
-                        }}
-                        className="flex items-center gap-2 bg-green-600 hover:bg-green-700 text-white px-4 py-2 rounded-xl transition text-sm"
-                      >
-                        <FaCheck size={14} /> Approve
-                      </button>
-                      <button
-                        onClick={() => {
-                          deleteDoc(doc(db, "expenses", t.id));
-                          showSuccess("Expense rejected");
-                        }}
-                        className="flex items-center gap-2 bg-red-600 hover:bg-red-700 text-white px-4 py-2 rounded-xl transition text-sm"
-                      >
-                        <FaTimes size={14} /> Reject
-                      </button>
-                    </div>
-                  </div>
-                ))}
-              </div>
-            </div>
-          )}
-
-          {/* Pending Deletions */}
-          {pendingDeletions.length > 0 && (
-            <div className="mb-8">
-              <h3 className="text-lg font-semibold text-white mb-4">Deletion Requests ({pendingDeletions.length})</h3>
-              <div className="space-y-4">
-                {pendingDeletions.map((t, index) => (
-                  <div 
-                    key={index} 
-                    className="bg-gray-800 rounded-xl border border-gray-700 p-5 shadow-sm hover:shadow-md transition"
-                  >
-                    <div className="flex justify-between items-start mb-4">
-                      <div>
-                        <h3 className="font-medium text-white">Delete Request</h3>
-                        <p className="text-sm text-gray-400">
-                          Requested by {t.requestedBy} on {format(new Date(t.requestedAt), "dd/MM/yyyy")}
-                        </p>
+                    {expense.imageUrl && (
+                      <div className="mb-3">
+                        <p className="text-xs text-gray-500 mb-1">وێنە</p>
+                        <Image src={expense.imageUrl} alt="Transaction" className="w-full h-40 object-cover rounded-lg" />
                       </div>
-                      <span className="px-3 py-1.5 rounded-full text-xs font-medium bg-purple-900/50 text-purple-400">
-                        Deletion
-                      </span>
-                    </div>
-
-                    <div className="mb-4">
-                      <p className="text-xs text-gray-500 mb-1">Reason</p>
-                      <p className="text-sm text-gray-300">{t.deleteReason}</p>
-                    </div>
-
-                    <div className="flex justify-end gap-3 pt-4 border-t border-gray-700">
+                    )}
+                    <div className="flex gap-2 pt-3 border-t border-gray-700">
                       <button
                         onClick={async () => {
-                          await deleteDoc(doc(db, t.collectionName, t.transactionId));
-                          await deleteDoc(doc(db, "pendingDeletions", t.id));
-                          showSuccess("Deletion approved");
+                          try {
+                            const db = getFirestore();
+                            await updateDoc(doc(db, "expenses", expense.id), {
+                              status: "approved"
+                            });
+                            showSuccess("مەسروفات پەسەندکرا");
+                          } catch (error) {
+                            console.error("Error approving expense:", error);
+                            showSuccess("هەڵە لە پەسەندکردنی مەسروفات", "error");
+                          }
                         }}
-                        className="flex items-center gap-2 bg-green-600 hover:bg-green-700 text-white px-4 py-2 rounded-xl transition text-sm"
+                        className="flex items-center gap-1.5 text-xs bg-green-600 hover:bg-green-500 text-white px-3 py-1.5 rounded-lg transition"
                       >
-                        <FaCheck size={14} /> Approve
+                        <FaCheck size={12} /> پەسەندکردن
                       </button>
                       <button
                         onClick={async () => {
-                          await deleteDoc(doc(db, "pendingDeletions", t.id));
-                          showSuccess("Deletion rejected");
+                          try {
+                            const db = getFirestore();
+                            await deleteDoc(doc(db, "expenses", expense.id));
+                            showSuccess("مەسروفات ڕەتکرایەوە");
+                          } catch (error) {
+                            console.error("Error rejecting expense:", error);
+                            showSuccess("هەڵە لە ڕەتکردنەوەی مەسروفات", "error");
+                          }
                         }}
-                        className="flex items-center gap-2 bg-red-600 hover:bg-red-700 text-white px-4 py-2 rounded-xl transition text-sm"
+                        className="flex items-center gap-1.5 text-xs bg-red-600 hover:bg-red-500 text-white px-3 py-1.5 rounded-lg transition"
                       >
-                        <FaTimes size={14} /> Reject
+                        <FaTimes size={12} /> ڕەتکردنەوە
                       </button>
                     </div>
                   </div>
@@ -1157,57 +1144,65 @@ export default function FinanceApp() {
 
           {/* Pending Edits */}
           {pendingEdits.length > 0 && (
-            <div className="mb-8">
-              <h3 className="text-lg font-semibold text-white mb-4">Edit Requests ({pendingEdits.length})</h3>
+            <div className="mb-6">
+              <h3 className="text-lg font-medium text-white mb-3">دەستکاری چاوەڕوانەکان</h3>
               <div className="space-y-4">
-                {pendingEdits.map((t, index) => (
-                  <div 
-                    key={index} 
-                    className="bg-gray-800 rounded-xl border border-gray-700 p-5 shadow-sm hover:shadow-md transition"
-                  >
-                    <div className="flex justify-between items-start mb-4">
+                {pendingEdits.map((edit, index) => (
+                  <div key={index} className="bg-gray-800 rounded-xl border border-gray-700 p-5 shadow-sm">
+                    <div className="flex justify-between items-start mb-3">
                       <div>
-                        <h3 className="font-medium text-white">Edit Request</h3>
+                        <h4 className="font-medium text-white">دەستکاری تراکنشن</h4>
                         <p className="text-sm text-gray-400">
-                          Requested by {t.requestedBy} on {format(new Date(t.requestedAt), "dd/MM/yyyy")}
+                          {format(new Date(edit.requestedAt), "dd/MM/yyyy HH:mm")}
                         </p>
                       </div>
-                      <span className="px-3 py-1.5 rounded-full text-xs font-medium bg-orange-900/50 text-orange-400">
-                        Edit
+                      <span className="px-3 py-1 rounded-full text-xs font-medium bg-blue-900/50 text-blue-400">
+                        چاوەڕوانی دەستکاری
                       </span>
                     </div>
-
-                    <div className="mb-4">
-                      <p className="text-xs text-gray-500 mb-1">Reason</p>
-                      <p className="text-sm text-gray-300">{t.note}</p>
+                    <div className="mb-3">
+                      <p className="text-xs text-gray-500 mb-1">داواکراوە لەلایەن</p>
+                      <p className="text-sm text-white">{edit.requestedBy}</p>
                     </div>
-
-                    <div className="mb-4">
-                      <p className="text-xs text-gray-500 mb-1">New Data</p>
-                      <pre className="text-xs text-gray-300 bg-gray-700 p-3 rounded-lg overflow-x-auto">
-                        {JSON.stringify(t.newData, null, 2)}
-                      </pre>
-                    </div>
-
-                    <div className="flex justify-end gap-3 pt-4 border-t border-gray-700">
+                    {edit.note && (
+                      <div className="mb-3">
+                        <p className="text-xs text-gray-500 mb-1">هۆکاری دەستکاری</p>
+                        <p className="text-sm text-gray-300">{edit.note}</p>
+                      </div>
+                    )}
+                    <div className="flex gap-2 pt-3 border-t border-gray-700">
                       <button
                         onClick={async () => {
-                          await updateDoc(doc(db, t.collectionName, t.transactionId), t.newData);
-                          await deleteDoc(doc(db, "pendingEdits", t.id));
-                          showSuccess("Edit approved");
+                          try {
+                            const db = getFirestore();
+                            // Apply the edit
+                            await updateDoc(doc(db, edit.collectionName, edit.transactionId), edit.newData);
+                            // Remove the pending edit
+                            await deleteDoc(doc(db, "pendingEdits", edit.id));
+                            showSuccess("دەستکاری پەسەندکرا");
+                          } catch (error) {
+                            console.error("Error approving edit:", error);
+                            showSuccess("هەڵە لە پەسەندکردنی دەستکاری", "error");
+                          }
                         }}
-                        className="flex items-center gap-2 bg-green-600 hover:bg-green-700 text-white px-4 py-2 rounded-xl transition text-sm"
+                        className="flex items-center gap-1.5 text-xs bg-green-600 hover:bg-green-500 text-white px-3 py-1.5 rounded-lg transition"
                       >
-                        <FaCheck size={14} /> Approve
+                        <FaCheck size={12} /> پەسەندکردن
                       </button>
                       <button
                         onClick={async () => {
-                          await deleteDoc(doc(db, "pendingEdits", t.id));
-                          showSuccess("Edit rejected");
+                          try {
+                            const db = getFirestore();
+                            await deleteDoc(doc(db, "pendingEdits", edit.id));
+                            showSuccess("دەستکاری ڕەتکرایەوە");
+                          } catch (error) {
+                            console.error("Error rejecting edit:", error);
+                            showSuccess("هەڵە لە ڕەتکردنەوەی دەستکاری", "error");
+                          }
                         }}
-                        className="flex items-center gap-2 bg-red-600 hover:bg-red-700 text-white px-4 py-2 rounded-xl transition text-sm"
+                        className="flex items-center gap-1.5 text-xs bg-red-600 hover:bg-red-500 text-white px-3 py-1.5 rounded-lg transition"
                       >
-                        <FaTimes size={14} /> Reject
+                        <FaTimes size={12} /> ڕەتکردنەوە
                       </button>
                     </div>
                   </div>
@@ -1216,117 +1211,284 @@ export default function FinanceApp() {
             </div>
           )}
 
-          {pendingContributions.length === 0 && pendingExpenses.length === 0 && 
-           pendingDeletions.length === 0 && pendingEdits.length === 0 && (
-            <div className="bg-gray-800 rounded-xl border border-gray-700 p-6 text-center text-gray-400">
-              No pending approvals at this time
+          {/* Pending Deletions */}
+          {pendingDeletions.length > 0 && (
+            <div className="mb-6">
+              <h3 className="text-lg font-medium text-white mb-3">سڕینەوەی چاوەڕوانەکان</h3>
+              <div className="space-y-4">
+                {pendingDeletions.map((deletion, index) => (
+                  <div key={index} className="bg-gray-800 rounded-xl border border-gray-700 p-5 shadow-sm">
+                    <div className="flex justify-between items-start mb-3">
+                      <div>
+                        <h4 className="font-medium text-white">سڕینەوەی تراکنشن</h4>
+                        <p className="text-sm text-gray-400">
+                          {format(new Date(deletion.requestedAt), "dd/MM/yyyy HH:mm")}
+                        </p>
+                      </div>
+                      <span className="px-3 py-1 rounded-full text-xs font-medium bg-red-900/50 text-red-400">
+                        چاوەڕوانی سڕینەوە
+                      </span>
+                    </div>
+                    <div className="mb-3">
+                      <p className="text-xs text-gray-500 mb-1">داواکراوە لەلایەن</p>
+                      <p className="text-sm text-white">{deletion.requestedBy}</p>
+                    </div>
+                    <div className="mb-3">
+                      <p className="text-xs text-gray-500 mb-1">هۆکاری سڕینەوە</p>
+                      <p className="text-sm text-gray-300">{deletion.deleteReason}</p>
+                    </div>
+                    <div className="flex gap-2 pt-3 border-t border-gray-700">
+                      <button
+                        onClick={async () => {
+                          try {
+                            const db = getFirestore();
+                            // Delete the transaction
+                            await deleteDoc(doc(db, deletion.collectionName, deletion.transactionId));
+                            // Remove the pending deletion
+                            await deleteDoc(doc(db, "pendingDeletions", deletion.id));
+                            showSuccess("سڕینەوە پەسەندکرا");
+                          } catch (error) {
+                            console.error("Error approving deletion:", error);
+                            showSuccess("هەڵە لە پەسەندکردنی سڕینەوە", "error");
+                          }
+                        }}
+                        className="flex items-center gap-1.5 text-xs bg-green-600 hover:bg-green-500 text-white px-3 py-1.5 rounded-lg transition"
+                      >
+                        <FaCheck size={12} /> پەسەندکردن
+                      </button>
+                      <button
+                        onClick={async () => {
+                          try {
+                            const db = getFirestore();
+                            await deleteDoc(doc(db, "pendingDeletions", deletion.id));
+                            showSuccess("سڕینەوە ڕەتکرایەوە");
+                          } catch (error) {
+                            console.error("Error rejecting deletion:", error);
+                            showSuccess("هەڵە لە ڕەتکردنەوەی سڕینەوە", "error");
+                          }
+                        }}
+                        className="flex items-center gap-1.5 text-xs bg-red-600 hover:bg-red-500 text-white px-3 py-1.5 rounded-lg transition"
+                      >
+                        <FaTimes size={12} /> ڕەتکردنەوە
+                      </button>
+                    </div>
+                  </div>
+                ))}
+              </div>
             </div>
           )}
-        </div>
+
+          {pendingContributions.length === 0 && pendingExpenses.length === 0 && pendingEdits.length === 0 && pendingDeletions.length === 0 && (
+            <div className="bg-gray-800 rounded-xl border border-gray-700 p-8 text-center">
+              <p className="text-gray-400">هیچ داواکاری چاوەڕوانێک نییە</p>
+            </div>
+          )}
+        </section>
+      )}
+
+      {/* Charts Section */}
+      {showCharts && (
+        <section ref={chartsRef} className="mb-8">
+          <h2 className="text-xl font-bold text-white mb-5 flex items-center gap-2">
+            <FaChartBar size={20} /> نەخشە و ئامارەکان
+          </h2>
+
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+            {/* Expenses by Category - Pie Chart */}
+            <div className="bg-gray-800 rounded-xl border border-gray-700 p-5 shadow-sm">
+              <h3 className="text-lg font-medium text-white mb-4">مەسروفات بەپێی كاتێگۆری</h3>
+              <div className="h-64">
+                <Pie
+                  data={{
+                    labels: expenseCategories,
+                    datasets: [{
+                      data: expenseCategories.map(category =>
+                        expenses.filter(e => e.category === category).reduce((sum, e) => sum + e.amount, 0)
+                      ),
+                      backgroundColor: [
+                        '#FF6384', '#36A2EB', '#FFCE56', '#4BC0C0', '#9966FF', '#FF9F40'
+                      ],
+                      borderWidth: 1
+                    }]
+                  }}
+                  options={{
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    plugins: {
+                      legend: {
+                        position: 'right',
+                        rtl: true,
+                        labels: {
+                          font: {
+                            family: "'NRT_Reg', sans-serif"
+                          }
+                        }
+                      }
+                    }
+                  }}
+                />
+              </div>
+            </div>
+
+            {/* Monthly Expenses - Bar Chart */}
+            <div className="bg-gray-800 rounded-xl border border-gray-700 p-5 shadow-sm">
+              <h3 className="text-lg font-medium text-white mb-4">مەسروفاتی مانگانە</h3>
+              <div className="h-64">
+                <Bar
+                  data={{
+                    labels: Array.from({ length: 12 }, (_, i) =>
+                      new Date(0, i).toLocaleString('ku-IQ', { month: 'short' })),
+                    datasets: [{
+                      label: 'مەسروفات',
+                      data: Array.from({ length: 12 }, (_, month) =>
+                        expenses.filter(e => {
+                          const date = e.date ? new Date(e.date) : null;
+                          return date && date.getMonth() === month;
+                        }).reduce((sum, e) => sum + e.amount, 0)
+                      ),
+                      backgroundColor: '#FF6384',
+                      borderWidth: 1
+                    }, {
+                      label: 'كۆکردنەکان',
+                      data: Array.from({ length: 12 }, (_, month) =>
+                        contributions.filter(c => {
+                          const date = c.date ? new Date(c.date) : null;
+                          return date && date.getMonth() === month;
+                        }).reduce((sum, c) => sum + c.amount, 0)
+                      ),
+                      backgroundColor: '#36A2EB',
+                      borderWidth: 1
+                    }]
+                  }}
+                  options={{
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    scales: {
+                      y: {
+                        beginAtZero: true
+                      }
+                    },
+                    plugins: {
+                      legend: {
+                        position: 'top',
+                        rtl: true,
+                        labels: {
+                          font: {
+                            family: "'NRT_Reg', sans-serif"
+                          }
+                        }
+                      }
+                    }
+                  }}
+                />
+              </div>
+            </div>
+          </div>
+        </section>
       )}
 
       {/* Contribution Form Modal */}
       {showContributionForm && (
         <div className="fixed inset-0 bg-black/70 z-50 flex items-center justify-center p-4">
-          <div className="bg-gray-800 rounded-xl border border-gray-700 p-6 w-full max-w-md">
-            <div className="flex justify-between items-center mb-5">
-              <h2 className="text-xl font-bold text-white">
-                {editingTransaction ? "Edit Contribution" : "Add Contribution"}
-              </h2>
-              <button
-                onClick={() => {
-                  setShowContributionForm(false);
-                  setEditingTransaction(null);
-                }}
-                className="text-gray-400 hover:text-white p-2"
-              >
-                <FaTimes size={20} />
-              </button>
-            </div>
+          <div className="bg-gray-800 rounded-xl border border-gray-700 p-6 w-full max-w-md relative max-h-[90vh] overflow-y-auto">
+            <button
+              onClick={() => {
+                setShowContributionForm(false);
+                setEditingTransaction(null);
+              }}
+              className="absolute top-4 left-4 text-gray-400 hover:text-white p-1"
+              aria-label="داخستن"
+            >
+              <FaTimes size={20} />
+            </button>
+            <h2 className="text-xl font-bold text-white mb-5 text-center">
+              {editingTransaction ? "دەستکاری كۆکردنەوە" : "زیادكردنی كۆکردنەوە"}
+            </h2>
             <form onSubmit={handleAddContribution} className="space-y-4">
               <div>
-                <label htmlFor="date" className="block text-sm font-medium text-gray-300 mb-2">
-                  Date
+                <label htmlFor="contributionDate" className="block text-sm font-medium text-gray-300 mb-2">
+                  بەروار
                 </label>
                 <div className="relative">
                   <input
                     type="date"
-                    id="date"
+                    id="contributionDate"
                     name="date"
                     required
-                    defaultValue={editingTransaction?.date || format(new Date(), "yyyy-MM-dd")}
+                    defaultValue={editingTransaction?.date || ""}
                     className="w-full px-4 py-3 bg-gray-700 border border-gray-600 rounded-xl focus:ring-2 focus:ring-blue-500 focus:border-blue-500 text-white"
                   />
                   <FaCalendarAlt className="absolute right-4 top-3.5 text-gray-400" />
                 </div>
               </div>
               <div>
-                <label htmlFor="amount" className="block text-sm font-medium text-gray-300 mb-2">
-                  Amount (IQD)
+                <label htmlFor="contributionAmount" className="block text-sm font-medium text-gray-300 mb-2">
+                  بڕی پارە
                 </label>
                 <input
                   type="number"
-                  id="amount"
+                  id="contributionAmount"
                   name="amount"
                   required
                   min="1"
-                  step="1"
                   defaultValue={editingTransaction?.amount || ""}
-                  className="w-full px-4 py-3 bg-gray-700 border border-gray-600 rounded-xl focus:ring-2 focus:ring-blue-500 focus:border-blue-500 text-white"
+                  placeholder="IQD"
+                  className="w-full px-4 py-3 bg-gray-700 border border-gray-600 rounded-xl focus:ring-2 focus:ring-blue-500 focus:border-blue-500 text-white placeholder-gray-400"
                 />
               </div>
               <div>
-                <label htmlFor="note" className="block text-sm font-medium text-gray-300 mb-2">
-                  Note (Optional)
+                <label htmlFor="contributionNote" className="block text-sm font-medium text-gray-300 mb-2">
+                  تێبینی (ده‌توانیت بە‌بی‌هی‌له‌)
                 </label>
                 <textarea
-                  id="note"
+                  id="contributionNote"
                   name="note"
                   rows="3"
                   defaultValue={editingTransaction?.note || ""}
-                  className="w-full px-4 py-3 bg-gray-700 border border-gray-600 rounded-xl focus:ring-2 focus:ring-blue-500 focus:border-blue-500 text-white"
+                  className="w-full px-4 py-3 bg-gray-700 border border-gray-600 rounded-xl focus:ring-2 focus:ring-blue-500 focus:border-blue-500 text-white placeholder-gray-400"
+                  placeholder="هیچ هەمانەیەك"
                 ></textarea>
+              </div>
+              <div>
+                <label htmlFor="contributionImage" className="block text-sm font-medium text-gray-300 mb-2">
+                  وێنە (ده‌توانیت بە‌بی‌هی‌له‌)
+                </label>
+                <input
+                  type="file"
+                  id="contributionImage"
+                  accept="image/*"
+                  onChange={(e) => setImageFile(e.target.files[0])}
+                  className="w-full px-4 py-3 bg-gray-700 border border-gray-600 rounded-xl focus:ring-2 focus:ring-blue-500 focus:border-blue-500 text-white placeholder-gray-400"
+                />
               </div>
               {editingTransaction && !isAdmin && (
                 <div>
                   <label htmlFor="editNote" className="block text-sm font-medium text-gray-300 mb-2">
-                    Reason for Edit (Required)
+                    هۆکاری دەستکاری
                   </label>
                   <textarea
                     id="editNote"
                     name="editNote"
-                    rows="3"
+                    rows="2"
                     required
-                    className="w-full px-4 py-3 bg-gray-700 border border-gray-600 rounded-xl focus:ring-2 focus:ring-blue-500 focus:border-blue-500 text-white"
+                    className="w-full px-4 py-3 bg-gray-700 border border-gray-600 rounded-xl focus:ring-2 focus:ring-blue-500 focus:border-blue-500 text-white placeholder-gray-400"
+                    placeholder="هۆکاری دەستکاری"
                   ></textarea>
                 </div>
               )}
-              <div className="flex justify-end gap-3 pt-4">
-                <button
-                  type="button"
-                  onClick={() => {
-                    setShowContributionForm(false);
-                    setEditingTransaction(null);
-                  }}
-                  className="px-5 py-3 bg-gray-700 hover:bg-gray-600 text-white rounded-xl transition"
-                >
-                  Cancel
-                </button>
-                <button
-                  type="submit"
-                  disabled={isLoading}
-                  className="px-5 py-3 bg-green-600 hover:bg-green-700 text-white rounded-xl transition flex items-center justify-center gap-2"
-                >
-                  {isLoading ? (
-                    "Processing..."
-                  ) : (
-                    <>
-                      {editingTransaction ? <FaEdit size={16} /> : <FaPlus size={16} />}
-                      {editingTransaction ? "Update" : "Add"}
-                    </>
-                  )}
-                </button>
-              </div>
+              <button
+                type="submit"
+                disabled={isLoading}
+                className="w-full bg-green-600 hover:bg-green-700 text-white py-3 px-4 rounded-xl transition flex items-center justify-center gap-3 text-lg disabled:opacity-70"
+              >
+                {isLoading ? (
+                  <span className="loading loading-spinner loading-sm"></span>
+                ) : (
+                  <>
+                    <FaCheck size={18} /> {editingTransaction ? "نوێکردنەوە" : "زیادکردن"}
+                  </>
+                )}
+              </button>
             </form>
           </div>
         </div>
@@ -1335,123 +1497,142 @@ export default function FinanceApp() {
       {/* Expense Form Modal */}
       {showExpenseForm && (
         <div className="fixed inset-0 bg-black/70 z-50 flex items-center justify-center p-4">
-          <div className="bg-gray-800 rounded-xl border border-gray-700 p-6 w-full max-w-md">
-            <div className="flex justify-between items-center mb-5">
-              <h2 className="text-xl font-bold text-white">
-                {editingTransaction ? "Edit Expense" : "Add Expense"}
-              </h2>
-              <button
-                onClick={() => {
-                  setShowExpenseForm(false);
-                  setEditingTransaction(null);
-                }}
-                className="text-gray-400 hover:text-white p-2"
-              >
-                <FaTimes size={20} />
-              </button>
-            </div>
+          <div className="bg-gray-800 rounded-xl border border-gray-700 p-6 w-full max-w-md relative max-h-[90vh] overflow-y-auto">
+            <button
+              onClick={() => {
+                setShowExpenseForm(false);
+                setEditingTransaction(null);
+              }}
+              className="absolute top-4 left-4 text-gray-400 hover:text-white p-1"
+              aria-label="داخستن"
+            >
+              <FaTimes size={20} />
+            </button>
+            <h2 className="text-xl font-bold text-white mb-5 text-center">
+              {editingTransaction ? "دەستکاری مەسروفات" : "زیادكردنی مەسروفات"}
+            </h2>
             <form onSubmit={handleAddExpense} className="space-y-4">
               <div>
-                <label htmlFor="date" className="block text-sm font-medium text-gray-300 mb-2">
-                  Date
+                <label htmlFor="expenseDate" className="block text-sm font-medium text-gray-300 mb-2">
+                  بەروار
                 </label>
                 <div className="relative">
                   <input
                     type="date"
-                    id="date"
+                    id="expenseDate"
                     name="date"
                     required
-                    defaultValue={editingTransaction?.date || format(new Date(), "yyyy-MM-dd")}
+                    defaultValue={editingTransaction?.date || ""}
                     className="w-full px-4 py-3 bg-gray-700 border border-gray-600 rounded-xl focus:ring-2 focus:ring-blue-500 focus:border-blue-500 text-white"
                   />
                   <FaCalendarAlt className="absolute right-4 top-3.5 text-gray-400" />
                 </div>
               </div>
               <div>
-                <label htmlFor="amount" className="block text-sm font-medium text-gray-300 mb-2">
-                  Amount (IQD)
+                <label htmlFor="expenseAmount" className="block text-sm font-medium text-gray-300 mb-2">
+                  بڕی پارە
                 </label>
                 <input
                   type="number"
-                  id="amount"
+                  id="expenseAmount"
                   name="amount"
                   required
                   min="1"
-                  step="1"
                   defaultValue={editingTransaction?.amount || ""}
-                  className="w-full px-4 py-3 bg-gray-700 border border-gray-600 rounded-xl focus:ring-2 focus:ring-blue-500 focus:border-blue-500 text-white"
+                  placeholder="IQD"
+                  className="w-full px-4 py-3 bg-gray-700 border border-gray-600 rounded-xl focus:ring-2 focus:ring-blue-500 focus:border-blue-500 text-white placeholder-gray-400"
                 />
               </div>
               <div>
-                <label htmlFor="category" className="block text-sm font-medium text-gray-300 mb-2">
-                  Category
+                <label htmlFor="expenseCategory" className="block text-sm font-medium text-gray-300 mb-2">
+                  كاتێگۆری
                 </label>
                 <select
-                  id="category"
+                  id="expenseCategory"
                   name="category"
                   required
                   defaultValue={editingTransaction?.category || ""}
                   className="w-full px-4 py-3 bg-gray-700 border border-gray-600 rounded-xl focus:ring-2 focus:ring-blue-500 focus:border-blue-500 text-white"
                 >
-                  <option value="">Select a category</option>
+                  <option value="">كاتێگۆری هەڵبژێرە</option>
                   {expenseCategories.map(category => (
                     <option key={category} value={category}>{category}</option>
                   ))}
                 </select>
               </div>
               <div>
-                <label htmlFor="description" className="block text-sm font-medium text-gray-300 mb-2">
-                  Description (Optional)
+                <label htmlFor="expenseDescription" className="block text-sm font-medium text-gray-300 mb-2">
+                  وەسف (ده‌توانیت بە‌بی‌هی‌له‌)
                 </label>
                 <textarea
-                  id="description"
+                  id="expenseDescription"
                   name="description"
                   rows="3"
                   defaultValue={editingTransaction?.note || ""}
-                  className="w-full px-4 py-3 bg-gray-700 border border-gray-600 rounded-xl focus:ring-2 focus:ring-blue-500 focus:border-blue-500 text-white"
+                  className="w-full px-4 py-3 bg-gray-700 border border-gray-600 rounded-xl focus:ring-2 focus:ring-blue-500 focus:border-blue-500 text-white placeholder-gray-400"
+                  placeholder="هیچ هەمانەیەك"
                 ></textarea>
+              </div>
+              <div>
+                <label htmlFor="expenseImage" className="block text-sm font-medium text-gray-300 mb-2">
+                  وێنە (ده‌توانیت بە‌بی‌هی‌له‌)
+                </label>
+                <input
+                  type="file"
+                  id="expenseImage"
+                  accept="image/*"
+                  onChange={(e) => setImageFile(e.target.files[0])}
+                  className="w-full px-4 py-3 bg-gray-700 border border-gray-600 rounded-xl focus:ring-2 focus:ring-blue-500 focus:border-blue-500 text-white placeholder-gray-400"
+                />
               </div>
               {editingTransaction && !isAdmin && (
                 <div>
                   <label htmlFor="editNote" className="block text-sm font-medium text-gray-300 mb-2">
-                    Reason for Edit (Required)
+                    هۆکاری دەستکاری
                   </label>
                   <textarea
                     id="editNote"
                     name="editNote"
-                    rows="3"
+                    rows="2"
                     required
-                    className="w-full px-4 py-3 bg-gray-700 border border-gray-600 rounded-xl focus:ring-2 focus:ring-blue-500 focus:border-blue-500 text-white"
+                    className="w-full px-4 py-3 bg-gray-700 border border-gray-600 rounded-xl focus:ring-2 focus:ring-blue-500 focus:border-blue-500 text-white placeholder-gray-400"
+                    placeholder="هۆکاری دەستکاری"
                   ></textarea>
                 </div>
               )}
-              <div className="flex justify-end gap-3 pt-4">
-                <button
-                  type="button"
-                  onClick={() => {
-                    setShowExpenseForm(false);
-                    setEditingTransaction(null);
-                  }}
-                  className="px-5 py-3 bg-gray-700 hover:bg-gray-600 text-white rounded-xl transition"
-                >
-                  Cancel
-                </button>
-                <button
-                  type="submit"
-                  disabled={isLoading}
-                  className="px-5 py-3 bg-red-600 hover:bg-red-700 text-white rounded-xl transition flex items-center justify-center gap-2"
-                >
-                  {isLoading ? (
-                    "Processing..."
-                  ) : (
-                    <>
-                      {editingTransaction ? <FaEdit size={16} /> : <FaPlus size={16} />}
-                      {editingTransaction ? "Update" : "Add"}
-                    </>
-                  )}
-                </button>
-              </div>
+              <button
+                type="submit"
+                disabled={isLoading}
+                className="w-full bg-red-600 hover:bg-red-700 text-white py-3 px-4 rounded-xl transition flex items-center justify-center gap-3 text-lg disabled:opacity-70"
+              >
+                {isLoading ? (
+                  <span className="loading loading-spinner loading-sm"></span>
+                ) : (
+                  <>
+                    <FaCheck size={18} /> {editingTransaction ? "نوێکردنەوە" : "زیادکردن"}
+                  </>
+                )}
+              </button>
             </form>
+          </div>
+        </div>
+      )}
+
+      {/* Image Modal */}
+      {showImageModal && (
+        <div className="fixed inset-0 bg-black/70 z-50 flex items-center justify-center p-4">
+          <div className="bg-gray-800 rounded-xl border border-gray-700 p-6 w-full max-w-md relative max-h-[90vh] overflow-y-auto">
+            <button
+              onClick={() => setShowImageModal(false)}
+              className="absolute top-4 left-4 text-gray-400 hover:text-white p-1"
+              aria-label="داخستن"
+            >
+              <FaTimes size={20} />
+            </button>
+            <h2 className="text-xl font-bold text-white mb-5 text-center">
+              وێنەی تراکنشن
+            </h2>
+            <Image src={selectedImageUrl} alt="Transaction" className="w-full h-auto rounded-lg" />
           </div>
         </div>
       )}

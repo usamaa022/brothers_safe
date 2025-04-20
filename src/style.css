@@ -1,0 +1,24 @@
+/* styles.css */
+@font-face {
+    font-family: 'NRT_Reg';
+    src: url('/fonts/NRT_Reg.ttf') format('truetype');
+    font-weight: normal;
+    font-style: normal;
+  }
+  
+  @font-face {
+    font-family: 'NRT_Bold';
+    src: url('/fonts/NRT_Bold.ttf') format('truetype');
+    font-weight: bold;
+    font-style: normal;
+  }
+  
+  /* Apply the font to specific elements */
+  .kurdish-font {
+    font-family: 'NRT_Reg', sans-serif;
+  }
+  
+  .kurdish-font-bold {
+    font-family: 'NRT_Bold', sans-serif;
+  }
+  
