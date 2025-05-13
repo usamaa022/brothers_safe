@@ -1,8 +1,6 @@
-
 "use client";
 import { useState, useEffect, useRef } from "react";
 import Image from 'next/image';
-
 import {
   FaMoneyBillWave, FaReceipt, FaWallet, FaPlus, FaMinus,
   FaSignInAlt, FaSignOutAlt, FaEdit, FaTrash, FaCheck,
@@ -31,6 +29,7 @@ import {
   signOut
 } from "../src/firebase";
 import '../src/style.css';
+
 
 // Register Chart.js components
 ChartJS.register(ArcElement, Tooltip, Legend, CategoryScale, LinearScale, BarElement, Title);
@@ -73,6 +72,7 @@ export default function FinanceApp() {
   const [imageFile, setImageFile] = useState(null);
   const [showImageModal, setShowImageModal] = useState(false);
   const [selectedImageUrl, setSelectedImageUrl] = useState("");
+  
 
   // Transaction data
   const [contributions, setContributions] = useState([]);
@@ -206,6 +206,7 @@ export default function FinanceApp() {
       formattedAmount: `${c.amount.toLocaleString("en-IQ")} IQD`,
       formattedDate: c.date ? format(new Date(c.date), "dd/MM/yyyy") : "بێ بەروار",
       brother: c.brother || userData?.username || currentUser.email,
+      createdBy: c.createdBy || currentUser.email,
       pendingEdit: pendingEdits.some(edit => edit.transactionId === c.id),
       pendingDeletion: pendingDeletions.some(deletion => deletion.transactionId === c.id)
     })),
@@ -215,6 +216,7 @@ export default function FinanceApp() {
       formattedAmount: `${e.amount.toLocaleString("en-IQ")} IQD`,
       formattedDate: e.date ? format(new Date(e.date), "dd/MM/yyyy") : "بێ بەروار",
       brother: e.brother || userData?.username || currentUser.email,
+      createdBy: e.createdBy || currentUser.email,
       pendingEdit: pendingEdits.some(edit => edit.transactionId === e.id),
       pendingDeletion: pendingDeletions.some(deletion => deletion.transactionId === e.id)
     })),
@@ -226,6 +228,7 @@ export default function FinanceApp() {
       formattedAmount: `${c.amount.toLocaleString("en-IQ")} IQD`,
       formattedDate: c.date ? format(new Date(c.date), "dd/MM/yyyy") : "بێ بەروار",
       brother: c.brother || userData?.username || currentUser.email,
+      createdBy: c.createdBy || currentUser.email,
       pendingEdit: pendingEdits.some(edit => edit.transactionId === c.id),
       pendingDeletion: pendingDeletions.some(deletion => deletion.transactionId === c.id)
     })),
@@ -236,6 +239,7 @@ export default function FinanceApp() {
       formattedAmount: `${e.amount.toLocaleString("en-IQ")} IQD`,
       formattedDate: e.date ? format(new Date(e.date), "dd/MM/yyyy") : "بێ بەروار",
       brother: e.brother || userData?.username || currentUser.email,
+      createdBy: e.createdBy || currentUser.email,
       pendingEdit: pendingEdits.some(edit => edit.transactionId === e.id),
       pendingDeletion: pendingDeletions.some(deletion => deletion.transactionId === e.id)
     }))
@@ -264,6 +268,7 @@ export default function FinanceApp() {
     return matchesType && matchesCategory && matchesDate && matchesAmount && matchesNote;
   });
 
+  
   // Pagination
   const indexOfLastTransaction = currentPage * transactionsPerPage;
   const indexOfFirstTransaction = indexOfLastTransaction - transactionsPerPage;
@@ -348,9 +353,9 @@ export default function FinanceApp() {
       let imageUrl = "";
 
       if (imageFile) {
-        const storageRef = ref(storage, `images/${imageFile.name}`);
-        await uploadBytes(storageRef, imageFile);
-        imageUrl = await getDownloadURL(storageRef);
+        const storageReference = storageRef(storage, `images/${imageFile.name}`);
+        await uploadBytes(storageReference, imageFile);
+        imageUrl = await getDownloadURL(storageReference);
       }
 
       const data = {
@@ -401,19 +406,12 @@ export default function FinanceApp() {
     e.preventDefault();
     setIsLoading(true);
     const form = e.target;
-
+    const db = getFirestore();
+    const storage = getStorage();
+  
     try {
-      const db = getFirestore();
-      const storage = getStorage();
-      let imageUrl = "";
-
-      if (imageFile) {
-        const storageRef = ref(storage, `images/${imageFile.name}`);
-        await uploadBytes(storageRef, imageFile);
-        imageUrl = await getDownloadURL(storageRef);
-      }
-
-      const data = {
+      // 1. Create basic expense document first (without waiting for image)
+      const docRef = await addDoc(collection(db, "expenses"), {
         date: form.date.value,
         amount: Number(form.amount.value),
         category: form.category.value,
@@ -422,37 +420,46 @@ export default function FinanceApp() {
         createdBy: currentUser.email,
         status: isAdmin ? "approved" : "pending",
         createdAt: new Date().toISOString(),
-        imageUrl: imageUrl
-      };
-
-      if (editingTransaction) {
-        if (isAdmin) {
-          await updateDoc(doc(db, "expenses", editingTransaction.id), data);
-          showSuccess("مەسروفات سەرکاوتوو بوو");
-        } else {
-          await addDoc(collection(db, "pendingEdits"), {
-            transactionId: editingTransaction.id,
-            collectionName: "expenses",
-            newData: data,
-            requestedBy: currentUser.email,
-            requestedAt: new Date().toISOString(),
-            status: "pending",
-            note: form.editNote?.value || "هیچ هەمانەیەك نەدراوە"
+        imageUrl: "",
+        imagePath: "",
+        imageUploading: !!imageFile // true if image exists
+      });
+  
+      // 2. If image exists, upload it
+      if (imageFile) {
+        try {
+          // Create unique filename
+          const fileExt = imageFile.name.split('.').pop();
+          const filename = `expenses/${currentUser.uid}/${docRef.id}.${fileExt}`;
+          const storageRef = ref(storage, filename);
+  
+          // Upload image
+          await uploadBytes(storageRef, imageFile);
+          const downloadUrl = await getDownloadURL(storageRef);
+  
+          // 3. Update document with image info
+          await updateDoc(docRef, {
+            imageUrl: downloadUrl,
+            imagePath: filename,
+            imageUploading: false
           });
-          showSuccess("داواکردنی دەستکاری بۆ پەسەندکردن ناردوو");
+  
+        } catch (uploadError) {
+          // If image upload fails, mark the document
+          await updateDoc(docRef, {
+            imageUploadError: true
+          });
+          throw uploadError;
         }
-      } else {
-        await addDoc(collection(db, "expenses"), data);
-        showSuccess("مەسروفات بە سەرکەوتوویی زیادکرا");
       }
-
+  
+      showSuccess("Expense submitted successfully!");
       setShowExpenseForm(false);
-      setEditingTransaction(null);
       setImageFile(null);
-      setImageUrl("");
+  
     } catch (error) {
-      console.error("Error processing expense:", error);
-      showSuccess("کارەکان ناکام بوو، تکایە دووبارە بکە", "error");
+      console.error("Error:", error);
+      showSuccess("Error submitting expense", "error");
     } finally {
       setIsLoading(false);
     }
@@ -539,10 +546,10 @@ export default function FinanceApp() {
         <div>
           <h1 className="text-2xl md:text-3xl font-bold text-white" style={{ fontFamily: "'NRT_Bold', sans-serif" }}>داشبۆردی داتاکان</h1>
           <p className="text-gray-300">
-            بەخێربێی، {userData?.username || currentUser.email} {isAdmin && "(ئادمین)"}
+            بەخێربێی، {userData?.username || currentUser.email} {isAdmin && "(ئەدمین)"}
           </p>
           <p className="text-gray-300">
-            چوونەژووردن بە {currentUser.email}
+              {currentUser.email}
           </p>
         </div>
         <button
@@ -681,9 +688,9 @@ export default function FinanceApp() {
                   className="w-full px-4 py-3 bg-gray-700 border border-gray-600 rounded-xl focus:ring-2 focus:ring-blue-500 focus:border-blue-500 text-white"
                   aria-label="فیلتەرکردن لەلایەن جۆری تراكنشن"
                 >
-                  <option value="all">هەموو تراكنشنەکان</option>
-                  <option value="deposit">كۆکردنەکان</option>
-                  <option value="expense">مەسروفات</option>
+                  <option value="all">خەرجی و داهات</option>
+                  <option value="deposit">داهات</option>
+                  <option value="expense">خەرجی</option>
                 </select>
               </div>
 
@@ -696,9 +703,9 @@ export default function FinanceApp() {
                   value={filterCategory}
                   onChange={(e) => setFilterCategory(e.target.value)}
                   className="w-full px-4 py-3 bg-gray-700 border border-gray-600 rounded-xl focus:ring-2 focus:ring-blue-500 focus:border-blue-500 text-white"
-                  aria-label="فیلتەرکردن لەلایەن كاتێگۆری"
+                  aria-label="فلتەرکردن بە كاتێگۆری"
                 >
-                  <option value="all">هەموو كاتێگۆریەکان</option>
+                  <option value="all">هەموو كاتەگۆریەکان</option>
                   {expenseCategories.map(category => (
                     <option key={category} value={category}>{category}</option>
                   ))}
@@ -740,7 +747,7 @@ export default function FinanceApp() {
                     value={amountRange[0]}
                     onChange={(e) => setAmountRange([Number(e.target.value), amountRange[1]])}
                     className="w-1/2 px-4 py-3 bg-gray-700 border border-gray-600 rounded-xl focus:ring-2 focus:ring-blue-500 focus:border-blue-500 text-white placeholder-gray-400"
-                    placeholder="بڕی کەم"
+                    placeholder="کەمترین بڕ "
                   />
                   <input
                     type="number"
@@ -749,14 +756,14 @@ export default function FinanceApp() {
                     value={amountRange[1]}
                     onChange={(e) => setAmountRange([amountRange[0], Number(e.target.value)])}
                     className="w-1/2 px-4 py-3 bg-gray-700 border border-gray-600 rounded-xl focus:ring-2 focus:ring-blue-500 focus:border-blue-500 text-white placeholder-gray-400"
-                    placeholder="بڕی زۆر"
+                    placeholder="زۆرترین بڕ"
                   />
                 </div>
               </div>
 
               <div>
                 <label htmlFor="searchNote" className="block text-sm font-medium text-gray-300 mb-2">
-                  گەڕان لە تێبینی
+                  گەڕان بەپێی تێبینی
                 </label>
                 <input
                   type="text"
@@ -775,7 +782,7 @@ export default function FinanceApp() {
                 className="text-sm text-blue-400 hover:text-blue-300 flex items-center gap-2"
                 aria-label="پاككردنی هەموو فیلتەرەکان"
               >
-                <FaTimes size={14} /> پاككردنی هەموو فیلتەرەکان
+                <FaTimes size={14} /> لابردنی هەموو فلتەرەکان
               </button>
               {(dateRange.start || dateRange.end || amountRange[0] || amountRange[1]) && (
                 <button
@@ -786,7 +793,7 @@ export default function FinanceApp() {
                   className="text-sm text-blue-400 hover:text-blue-300 flex items-center gap-2"
                   aria-label="پاككردنی فیلتەری بەرواری"
                 >
-                  <FaTimes size={14} /> پاككردنی بەرواری
+                  <FaTimes size={14} /> لابردنی فلتەر بەپێی بەروار
                 </button>
               )}
             </div>
@@ -807,7 +814,7 @@ export default function FinanceApp() {
                 {/* Transaction header */}
                 <div className="flex justify-between items-start mb-4">
                   <div>
-                    <h3 className="font-medium text-white">{t.brother || "ناشناس"}</h3>
+                    <h3 className="font-medium text-white">{t.brother || "ناو"}</h3>
                     <p className="text-sm text-gray-400">{t.formattedDate}</p>
                   </div>
                   <span className={`px-3 py-1.5 rounded-full text-xs font-medium ${
@@ -838,10 +845,16 @@ export default function FinanceApp() {
                 )}
 
                 {/* Transaction image */}
-                {t.imageUrl && (
+                {/* {t.imageUrl && (
                   <div className="mb-4">
                     <p className="text-xs text-gray-500 mb-1">وێنە</p>
-                    <Image src={t.imageUrl} alt="Transaction" className="w-full h-40 object-cover rounded-lg" />
+                    <Image 
+                      src={t.imageUrl} 
+                      alt="Transaction" 
+                      width={400}
+                      height={300}
+                      className="w-full h-40 object-cover rounded-lg" 
+                    />
                     <button
                       onClick={() => {
                         setSelectedImageUrl(t.imageUrl);
@@ -852,24 +865,26 @@ export default function FinanceApp() {
                       <FaEye size={14} /> پیشاندانی وێنە
                     </button>
                   </div>
-                )}
+
+                  
+                )} */}
 
                 {/* Transaction status and actions */}
                 <div className="flex flex-wrap gap-2 pt-4 border-t border-gray-700">
                   {/* Status badges */}
                   {t.status === "pending" && (
                     <span className="px-3 py-1 rounded-full text-xs font-medium bg-yellow-900/50 text-yellow-400">
-                      چاوەڕوانی پەسەند
+                    داواکاری پەسەندکردن
                     </span>
                   )}
                   {t.pendingEdit && (
                     <span className="px-3 py-1 rounded-full text-xs font-medium bg-blue-900/50 text-blue-400">
-                      داواکردنی دەستکاری
+                    داواکاری گۆڕانکاری
                     </span>
                   )}
                   {t.pendingDeletion && (
                     <span className="px-3 py-1 rounded-full text-xs font-medium bg-red-900/50 text-red-400">
-                      داواکردنی سڕینەوە
+                      داواکاری سڕینەوە
                     </span>
                   )}
 
@@ -887,9 +902,9 @@ export default function FinanceApp() {
                           }
                         }}
                         className="flex items-center gap-1.5 text-xs bg-gray-700 hover:bg-gray-600 text-gray-100 px-3 py-1.5 rounded-lg transition"
-                        aria-label="دەستکاری"
+                        aria-label="گۆڕانکاری"
                       >
-                        <FaEdit size={12} /> دەستکاری
+                        <FaEdit size={12} /> گۆڕانکاری
                       </button>
                     )}
 
@@ -914,12 +929,12 @@ export default function FinanceApp() {
                   <div className="mt-4 p-4 bg-gray-700 rounded-lg">
                     <h4 className="text-sm font-medium mb-2">سڕینەوەی تراکنشن</h4>
                     <p className="text-xs text-gray-300 mb-3">
-                      ئایا دڵنیای لە سڕینەوەی ئەم تراکنشنە؟ ئەم کارە ناتوانرێت هەڵوەشێنرێتەوە.
+                      ئایا دڵنیای لە سڕینەوەی؟.
                     </p>
                     <textarea
                       value={deleteReason}
                       onChange={(e) => setDeleteReason(e.target.value)}
-                      placeholder="هۆکاری سڕینەوە (پێویستە)"
+                      placeholder="هۆکاری سڕینەوە (پێویستە پڕ بکرێتەوە)"
                       className="w-full px-3 py-2 bg-gray-600 border border-gray-500 rounded-lg text-white text-xs mb-3"
                       rows={2}
                     />
@@ -950,7 +965,7 @@ export default function FinanceApp() {
             ))
           ) : (
             <div className="bg-gray-800 rounded-xl border border-gray-700 p-8 text-center">
-              <p className="text-gray-400">هیچ تراکنشنێک نەدۆزرایەوە</p>
+              <p className="text-gray-400">هیچ ترانزاکشنێک نەدۆزرایەوە</p>
             </div>
           )}
         </div>
@@ -987,7 +1002,7 @@ export default function FinanceApp() {
                   <div key={index} className="bg-gray-800 rounded-xl border border-gray-700 p-5 shadow-sm">
                     <div className="flex justify-between items-start mb-3">
                       <div>
-                        <h4 className="font-medium text-white">{contribution.brother || "ناشناس"}</h4>
+                        <h4 className="font-medium text-white">{contribution.brother || "ناو"}</h4>
                         <p className="text-sm text-gray-400">
                           {contribution.date ? format(new Date(contribution.date), "dd/MM/yyyy") : "بێ بەروار"}
                         </p>
@@ -1017,7 +1032,13 @@ export default function FinanceApp() {
                     {contribution.imageUrl && (
                       <div className="mb-3">
                         <p className="text-xs text-gray-500 mb-1">وێنە</p>
-                        <Image src={contribution.imageUrl} alt="Transaction" className="w-full h-40 object-cover rounded-lg" />
+                        <Image 
+                          src={contribution.imageUrl} 
+                          alt="Transaction" 
+                          width={400}
+                          height={300}
+                          className="w-full h-40 object-cover rounded-lg" 
+                        />
                       </div>
                     )}
                     <div className="flex gap-2 pt-3 border-t border-gray-700">
@@ -1028,10 +1049,10 @@ export default function FinanceApp() {
                             await updateDoc(doc(db, "contributions", contribution.id), {
                               status: "approved"
                             });
-                            showSuccess("کۆکردنەوە پەسەندکرا");
+                            showSuccess("زیادکردنی پارە پەسەندکرا");
                           } catch (error) {
                             console.error("Error approving contribution:", error);
-                            showSuccess("هەڵە لە پەسەندکردنی کۆکردنەوە", "error");
+                            showSuccess("کێشەیەک هەیە، پەسەند نەکرا ", "error");
                           }
                         }}
                         className="flex items-center gap-1.5 text-xs bg-green-600 hover:bg-green-500 text-white px-3 py-1.5 rounded-lg transition"
@@ -1043,10 +1064,10 @@ export default function FinanceApp() {
                           try {
                             const db = getFirestore();
                             await deleteDoc(doc(db, "contributions", contribution.id));
-                            showSuccess("کۆکردنەوە ڕەتکرایەوە");
+                            showSuccess("زیادکردنی پارە سەرکەوتوو بوو");
                           } catch (error) {
                             console.error("Error rejecting contribution:", error);
-                            showSuccess("هەڵە لە ڕەتکردنەوەی کۆکردنەوە", "error");
+                            showSuccess("زیادکردنی پارە سەرکەوتوو بوو", "error");
                           }
                         }}
                         className="flex items-center gap-1.5 text-xs bg-red-600 hover:bg-red-500 text-white px-3 py-1.5 rounded-lg transition"
@@ -1063,7 +1084,7 @@ export default function FinanceApp() {
           {/* Pending Expenses */}
           {pendingExpenses.length > 0 && (
             <div className="mb-6">
-              <h3 className="text-lg font-medium text-white mb-3">مەسروفاتی چاوەڕوان</h3>
+              <h3 className="text-lg font-medium text-white mb-3">خەرجی چاوەڕوان</h3>
               <div className="space-y-4">
                 {pendingExpenses.map((expense, index) => (
                   <div key={index} className="bg-gray-800 rounded-xl border border-gray-700 p-5 shadow-sm">
@@ -1075,7 +1096,7 @@ export default function FinanceApp() {
                         </p>
                       </div>
                       <span className="px-3 py-1 rounded-full text-xs font-medium bg-yellow-900/50 text-yellow-400">
-                        چاوەڕوانی پەسەند
+                        چاوەڕوانی پەسەندکردن
                       </span>
                     </div>
                     <div className="grid grid-cols-2 gap-4 mb-3">
@@ -1099,7 +1120,13 @@ export default function FinanceApp() {
                     {expense.imageUrl && (
                       <div className="mb-3">
                         <p className="text-xs text-gray-500 mb-1">وێنە</p>
-                        <Image src={expense.imageUrl} alt="Transaction" className="w-full h-40 object-cover rounded-lg" />
+                        <Image 
+                          src={expense.imageUrl} 
+                          alt="Transaction" 
+                          width={400}
+                          height={300}
+                          className="w-full h-40 object-cover rounded-lg" 
+                        />
                       </div>
                     )}
                     <div className="flex gap-2 pt-3 border-t border-gray-700">
@@ -1110,7 +1137,7 @@ export default function FinanceApp() {
                             await updateDoc(doc(db, "expenses", expense.id), {
                               status: "approved"
                             });
-                            showSuccess("مەسروفات پەسەندکرا");
+                            showSuccess("مەسروفات ڕەتکرایەوە");
                           } catch (error) {
                             console.error("Error approving expense:", error);
                             showSuccess("هەڵە لە پەسەندکردنی مەسروفات", "error");
@@ -1145,13 +1172,13 @@ export default function FinanceApp() {
           {/* Pending Edits */}
           {pendingEdits.length > 0 && (
             <div className="mb-6">
-              <h3 className="text-lg font-medium text-white mb-3">دەستکاری چاوەڕوانەکان</h3>
+              <h3 className="text-lg font-medium text-white mb-3">گۆڕانکاری چاوەڕوانەکان</h3>
               <div className="space-y-4">
                 {pendingEdits.map((edit, index) => (
                   <div key={index} className="bg-gray-800 rounded-xl border border-gray-700 p-5 shadow-sm">
                     <div className="flex justify-between items-start mb-3">
                       <div>
-                        <h4 className="font-medium text-white">دەستکاری تراکنشن</h4>
+                        <h4 className="font-medium text-white">دەستکاری ترانزاکشن</h4>
                         <p className="text-sm text-gray-400">
                           {format(new Date(edit.requestedAt), "dd/MM/yyyy HH:mm")}
                         </p>
@@ -1166,7 +1193,7 @@ export default function FinanceApp() {
                     </div>
                     {edit.note && (
                       <div className="mb-3">
-                        <p className="text-xs text-gray-500 mb-1">هۆکاری دەستکاری</p>
+                        <p className="text-xs text-gray-500 mb-1">هۆکاری گۆڕانکاری</p>
                         <p className="text-sm text-gray-300">{edit.note}</p>
                       </div>
                     )}
@@ -1182,7 +1209,7 @@ export default function FinanceApp() {
                             showSuccess("دەستکاری پەسەندکرا");
                           } catch (error) {
                             console.error("Error approving edit:", error);
-                            showSuccess("هەڵە لە پەسەندکردنی دەستکاری", "error");
+                            showSuccess("هەڵە لە پەسەندکردنی گۆڕانکاری", "error");
                           }
                         }}
                         className="flex items-center gap-1.5 text-xs bg-green-600 hover:bg-green-500 text-white px-3 py-1.5 rounded-lg transition"
@@ -1194,7 +1221,7 @@ export default function FinanceApp() {
                           try {
                             const db = getFirestore();
                             await deleteDoc(doc(db, "pendingEdits", edit.id));
-                            showSuccess("دەستکاری ڕەتکرایەوە");
+                            showSuccess("گۆڕانکاری ڕەتکرایەوە");
                           } catch (error) {
                             console.error("Error rejecting edit:", error);
                             showSuccess("هەڵە لە ڕەتکردنەوەی دەستکاری", "error");
@@ -1220,7 +1247,7 @@ export default function FinanceApp() {
                   <div key={index} className="bg-gray-800 rounded-xl border border-gray-700 p-5 shadow-sm">
                     <div className="flex justify-between items-start mb-3">
                       <div>
-                        <h4 className="font-medium text-white">سڕینەوەی تراکنشن</h4>
+                        <h4 className="font-medium text-white">سڕینەوەی ترانزاکشن</h4>
                         <p className="text-sm text-gray-400">
                           {format(new Date(deletion.requestedAt), "dd/MM/yyyy HH:mm")}
                         </p>
@@ -1296,7 +1323,7 @@ export default function FinanceApp() {
           <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
             {/* Expenses by Category - Pie Chart */}
             <div className="bg-gray-800 rounded-xl border border-gray-700 p-5 shadow-sm">
-              <h3 className="text-lg font-medium text-white mb-4">مەسروفات بەپێی كاتێگۆری</h3>
+              <h3 className="text-lg font-medium text-white mb-4">خەرجی بەپێی كاتێگۆری</h3>
               <div className="h-64">
                 <Pie
                   data={{
@@ -1332,7 +1359,7 @@ export default function FinanceApp() {
 
             {/* Monthly Expenses - Bar Chart */}
             <div className="bg-gray-800 rounded-xl border border-gray-700 p-5 shadow-sm">
-              <h3 className="text-lg font-medium text-white mb-4">مەسروفاتی مانگانە</h3>
+              <h3 className="text-lg font-medium text-white mb-4">خەرجی مانگانە</h3>
               <div className="h-64">
                 <Bar
                   data={{
@@ -1402,7 +1429,7 @@ export default function FinanceApp() {
               <FaTimes size={20} />
             </button>
             <h2 className="text-xl font-bold text-white mb-5 text-center">
-              {editingTransaction ? "دەستکاری كۆکردنەوە" : "زیادكردنی كۆکردنەوە"}
+              {editingTransaction ? "گۆڕانکاری لە زیادکردنی پارە" : "زیادكردنی پارە"}
             </h2>
             <form onSubmit={handleAddContribution} className="space-y-4">
               <div>
@@ -1438,7 +1465,7 @@ export default function FinanceApp() {
               </div>
               <div>
                 <label htmlFor="contributionNote" className="block text-sm font-medium text-gray-300 mb-2">
-                  تێبینی (ده‌توانیت بە‌بی‌هی‌له‌)
+                  تێبینی
                 </label>
                 <textarea
                   id="contributionNote"
@@ -1446,25 +1473,25 @@ export default function FinanceApp() {
                   rows="3"
                   defaultValue={editingTransaction?.note || ""}
                   className="w-full px-4 py-3 bg-gray-700 border border-gray-600 rounded-xl focus:ring-2 focus:ring-blue-500 focus:border-blue-500 text-white placeholder-gray-400"
-                  placeholder="هیچ هەمانەیەك"
+                  placeholder=" تێبینی "
                 ></textarea>
               </div>
               <div>
-                <label htmlFor="contributionImage" className="block text-sm font-medium text-gray-300 mb-2">
+                {/* <label htmlFor="contributionImage" className="block text-sm font-medium text-gray-300 mb-2">
                   وێنە (ده‌توانیت بە‌بی‌هی‌له‌)
-                </label>
-                <input
+                </label> */}
+                {/* <input
                   type="file"
                   id="contributionImage"
                   accept="image/*"
                   onChange={(e) => setImageFile(e.target.files[0])}
                   className="w-full px-4 py-3 bg-gray-700 border border-gray-600 rounded-xl focus:ring-2 focus:ring-blue-500 focus:border-blue-500 text-white placeholder-gray-400"
-                />
+                /> */}
               </div>
               {editingTransaction && !isAdmin && (
                 <div>
                   <label htmlFor="editNote" className="block text-sm font-medium text-gray-300 mb-2">
-                    هۆکاری دەستکاری
+                    هۆکاری گۆڕانکاری
                   </label>
                   <textarea
                     id="editNote"
@@ -1472,7 +1499,7 @@ export default function FinanceApp() {
                     rows="2"
                     required
                     className="w-full px-4 py-3 bg-gray-700 border border-gray-600 rounded-xl focus:ring-2 focus:ring-blue-500 focus:border-blue-500 text-white placeholder-gray-400"
-                    placeholder="هۆکاری دەستکاری"
+                    placeholder="هۆکاری گۆڕانکاری"
                   ></textarea>
                 </div>
               )}
@@ -1509,7 +1536,7 @@ export default function FinanceApp() {
               <FaTimes size={20} />
             </button>
             <h2 className="text-xl font-bold text-white mb-5 text-center">
-              {editingTransaction ? "دەستکاری مەسروفات" : "زیادكردنی مەسروفات"}
+              {editingTransaction ? "گۆڕانکاری خەرجی" : "زیادكردنی خەرجی"}
             </h2>
             <form onSubmit={handleAddExpense} className="space-y-4">
               <div>
@@ -1562,7 +1589,7 @@ export default function FinanceApp() {
               </div>
               <div>
                 <label htmlFor="expenseDescription" className="block text-sm font-medium text-gray-300 mb-2">
-                  وەسف (ده‌توانیت بە‌بی‌هی‌له‌)
+                 تێبینی زیاتر
                 </label>
                 <textarea
                   id="expenseDescription"
@@ -1570,10 +1597,10 @@ export default function FinanceApp() {
                   rows="3"
                   defaultValue={editingTransaction?.note || ""}
                   className="w-full px-4 py-3 bg-gray-700 border border-gray-600 rounded-xl focus:ring-2 focus:ring-blue-500 focus:border-blue-500 text-white placeholder-gray-400"
-                  placeholder="هیچ هەمانەیەك"
+                  placeholder="تێبینی زیاتر"
                 ></textarea>
               </div>
-              <div>
+              {/* <div>
                 <label htmlFor="expenseImage" className="block text-sm font-medium text-gray-300 mb-2">
                   وێنە (ده‌توانیت بە‌بی‌هی‌له‌)
                 </label>
@@ -1584,11 +1611,11 @@ export default function FinanceApp() {
                   onChange={(e) => setImageFile(e.target.files[0])}
                   className="w-full px-4 py-3 bg-gray-700 border border-gray-600 rounded-xl focus:ring-2 focus:ring-blue-500 focus:border-blue-500 text-white placeholder-gray-400"
                 />
-              </div>
+              </div> */}
               {editingTransaction && !isAdmin && (
                 <div>
                   <label htmlFor="editNote" className="block text-sm font-medium text-gray-300 mb-2">
-                    هۆکاری دەستکاری
+                    هۆکاری گۆڕانکاری
                   </label>
                   <textarea
                     id="editNote"
@@ -1596,7 +1623,7 @@ export default function FinanceApp() {
                     rows="2"
                     required
                     className="w-full px-4 py-3 bg-gray-700 border border-gray-600 rounded-xl focus:ring-2 focus:ring-blue-500 focus:border-blue-500 text-white placeholder-gray-400"
-                    placeholder="هۆکاری دەستکاری"
+                    placeholder="هۆکاری گۆڕانکاری"
                   ></textarea>
                 </div>
               )}
@@ -1632,7 +1659,13 @@ export default function FinanceApp() {
             <h2 className="text-xl font-bold text-white mb-5 text-center">
               وێنەی تراکنشن
             </h2>
-            <Image src={selectedImageUrl} alt="Transaction" className="w-full h-auto rounded-lg" />
+            <Image 
+              src={selectedImageUrl} 
+              alt="Transaction" 
+              width={800}
+              height={600}
+              className="w-full h-auto rounded-lg" 
+            />
           </div>
         </div>
       )}
