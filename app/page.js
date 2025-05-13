@@ -470,7 +470,7 @@ export default function FinanceApp() {
     return (
       <div className="min-h-screen bg-gray-900 flex items-center justify-center p-6">
         <div className="bg-gray-800 p-8 rounded-2xl shadow-xl w-full max-w-md">
-          <h2 className="text-2xl font-bold text-white mb-6 text-center">چوونەژووردنی بەکارهێنانی داتاکان</h2>
+          <h2 className="text-2xl font-bold text-white mb-6 text-center">ئیمەیڵ و پاسۆرد بنوسە</h2>
           {loginError && (
             <div className="bg-red-900/50 border-l-4 border-red-500 text-red-200 p-4 mb-4 rounded-lg">
               {loginError}
@@ -492,7 +492,7 @@ export default function FinanceApp() {
             </div>
             <div className="relative">
               <label htmlFor="password" className="block text-sm font-medium text-gray-300 mb-2">
-                تێپەڕوارد
+                وشەی نهێنی
               </label>
               <input
                 type={showPassword ? "text" : "password"}
@@ -506,7 +506,7 @@ export default function FinanceApp() {
                 type="button"
                 className="absolute right-3 top-[38px] text-gray-400 hover:text-white p-2"
                 onClick={() => setShowPassword(!showPassword)}
-                aria-label={showPassword ? "شاردنەوەی تێپەڕوارد" : "پیشاندانی تێپەڕوارد"}
+                aria-label={showPassword ? "شاردنەوەی وشەی نهێنی" : "پیشاندانی وشەی نهێنی"}
               >
                 {showPassword ? <FaEyeSlash size={18} /> : <FaEye size={18} />}
               </button>
