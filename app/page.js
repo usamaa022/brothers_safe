@@ -37,7 +37,7 @@ ChartJS.register(ArcElement, Tooltip, Legend, CategoryScale, LinearScale, BarEle
 // Expense categories in Kurdish (Sorani)
 const expenseCategories = [
   "ئینتەرنێت", "کارەبا", "کەلوپەلی ناوماڵ",
-  "دەعوەت", "دەرمان" , "سەیران" , "پێداویستی تر:(تێبینی بنووسە)",
+  "دەعوەت", "دەرمان", "هی تر.. (تێبینی بنووسە)",
 ];
 
 export default function FinanceApp() {
