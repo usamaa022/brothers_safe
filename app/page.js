@@ -7,6 +7,8 @@ import {
   FaTimes, FaFilter, FaEye, FaEyeSlash, FaCalendarAlt, FaChartBar, FaClock,
   FaArrowUp, FaArrowDown, FaCamera, FaImage
 } from "react-icons/fa";
+import imageCompression from 'browser-image-compression';
+
 import { format } from "date-fns";
 import { Bar, Pie } from "react-chartjs-2";
 import {
@@ -44,8 +46,11 @@ export default function FinanceApp() {
   // Refs
   const chartsRef = useRef(null);
   const pendingRef = useRef(null);
+  const fileInputRef = useRef(null);
+  
 
   // State variables
+
   const [currentUser, setCurrentUser] = useState(null);
   const [userData, setUserData] = useState(null);
   const [isAdmin, setIsAdmin] = useState(false);
@@ -70,9 +75,11 @@ export default function FinanceApp() {
   const [transactionsPerPage] = useState(10);
   const [imageUrl, setImageUrl] = useState("");
   const [imageFile, setImageFile] = useState(null);
+  const [imagePreview, setImagePreview] = useState(null);
   const [showImageModal, setShowImageModal] = useState(false);
   const [selectedImageUrl, setSelectedImageUrl] = useState("");
-  
+  const [showCamera, setShowCamera] = useState(false);
+  const [cameraStream, setCameraStream] = useState(null);
 
   // Transaction data
   const [contributions, setContributions] = useState([]);
@@ -96,6 +103,84 @@ export default function FinanceApp() {
     setSuccessMessage(message);
     setSuccessType(type);
     setTimeout(() => setSuccessMessage(""), 5000);
+  };
+
+  // Handle image upload
+  const handleImageUpload = (e) => {
+    const file = e.target.files[0];
+    if (file) {
+      setImageFile(file);
+      setImagePreview(URL.createObjectURL(file));
+    }
+  };
+
+  // Handle camera capture
+  const handleCameraCapture = async () => {
+    if (cameraStream) {
+      const video = document.getElementById('cameraVideo');
+      const canvas = document.createElement('canvas');
+      canvas.width = video.videoWidth;
+      canvas.height = video.videoHeight;
+      const ctx = canvas.getContext('2d');
+      ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+
+      canvas.toBlob(async (blob) => {
+        const file = new File([blob], `capture-${Date.now()}.jpg`, { type: 'image/jpeg' });
+        setImageFile(file);
+        setImagePreview(URL.createObjectURL(file));
+        stopCamera();
+      }, 'image/jpeg', 0.92);
+    }
+  };
+
+  // Start camera
+  const startCamera = async () => {
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ video: true });
+      setCameraStream(stream);
+      setShowCamera(true);
+      const video = document.getElementById('cameraVideo');
+      if (video) {
+        video.srcObject = stream;
+      }
+    } catch (err) {
+      console.error("Error accessing camera:", err);
+      showSuccess("ناتوانی لە دەستپێکردنی کامرا", "error");
+    }
+  };
+
+  // Stop camera
+  const stopCamera = () => {
+    if (cameraStream) {
+      cameraStream.getTracks().forEach(track => track.stop());
+      setCameraStream(null);
+      setShowCamera(false);
+    }
+  };
+
+  // Compress image
+  const compressImage = async (file) => {
+    const options = {
+      maxSizeMB: 0.5,
+      maxWidthOrHeight: 1024,
+      useWebWorker: true
+    };
+    try {
+      return await imageCompression(file, options);
+    } catch (error) {
+      console.error("Error compressing image:", error);
+      return file;
+    }
+  };
+
+  // Convert to Base64
+  const convertToBase64 = (file) => {
+    return new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.readAsDataURL(file);
+      reader.onload = () => resolve(reader.result);
+      reader.onerror = error => reject(error);
+    });
   };
 
   // Check admin status on auth change
@@ -124,7 +209,7 @@ export default function FinanceApp() {
 
   // Set the document title
   useEffect(() => {
-    document.title = "brakan";
+    document.title = "براکان";
   }, []);
 
   // Fetch user data from Firestore
@@ -268,7 +353,6 @@ export default function FinanceApp() {
     return matchesType && matchesCategory && matchesDate && matchesAmount && matchesNote;
   });
 
-  
   // Pagination
   const indexOfLastTransaction = currentPage * transactionsPerPage;
   const indexOfFirstTransaction = indexOfLastTransaction - transactionsPerPage;
@@ -350,13 +434,6 @@ export default function FinanceApp() {
     try {
       const db = getFirestore();
       const storage = getStorage();
-      let imageUrl = "";
-
-      if (imageFile) {
-        const storageReference = storageRef(storage, `images/${imageFile.name}`);
-        await uploadBytes(storageReference, imageFile);
-        imageUrl = await getDownloadURL(storageReference);
-      }
 
       const data = {
         date: form.date.value,
@@ -366,7 +443,6 @@ export default function FinanceApp() {
         createdBy: currentUser.email,
         status: isAdmin ? "approved" : "pending",
         createdAt: new Date().toISOString(),
-        imageUrl: imageUrl
       };
 
       if (editingTransaction) {
@@ -394,6 +470,7 @@ export default function FinanceApp() {
       setEditingTransaction(null);
       setImageFile(null);
       setImageUrl("");
+      setImagePreview(null);
     } catch (error) {
       console.error("Error processing contribution:", error);
       showSuccess("کارەکان ناکام بوو، تکایە دووبارە بکە", "error");
@@ -408,10 +485,18 @@ export default function FinanceApp() {
     const form = e.target;
     const db = getFirestore();
     const storage = getStorage();
-  
+
     try {
-      // 1. Create basic expense document first (without waiting for image)
-      const docRef = await addDoc(collection(db, "expenses"), {
+      let imageData = null;
+      let compressedFile = imageFile;
+
+      // Compress image if it exists
+      if (imageFile) {
+        compressedFile = await compressImage(imageFile);
+        imageData = await convertToBase64(compressedFile);
+      }
+
+      const data = {
         date: form.date.value,
         amount: Number(form.amount.value),
         category: form.category.value,
@@ -420,46 +505,38 @@ export default function FinanceApp() {
         createdBy: currentUser.email,
         status: isAdmin ? "approved" : "pending",
         createdAt: new Date().toISOString(),
-        imageUrl: "",
-        imagePath: "",
-        imageUploading: !!imageFile // true if image exists
-      });
-  
-      // 2. If image exists, upload it
-      if (imageFile) {
-        try {
-          // Create unique filename
-          const fileExt = imageFile.name.split('.').pop();
-          const filename = `expenses/${currentUser.uid}/${docRef.id}.${fileExt}`;
-          const storageRef = ref(storage, filename);
-  
-          // Upload image
-          await uploadBytes(storageRef, imageFile);
-          const downloadUrl = await getDownloadURL(storageRef);
-  
-          // 3. Update document with image info
-          await updateDoc(docRef, {
-            imageUrl: downloadUrl,
-            imagePath: filename,
-            imageUploading: false
+        image: imageData || "",
+        imageName: imageFile ? imageFile.name : ""
+      };
+
+      if (editingTransaction) {
+        if (isAdmin) {
+          await updateDoc(doc(db, "expenses", editingTransaction.id), data);
+          showSuccess("مەسروفات سەرکەوتوو نوێکرایەوە");
+        } else {
+          await addDoc(collection(db, "pendingEdits"), {
+            transactionId: editingTransaction.id,
+            collectionName: "expenses",
+            newData: data,
+            requestedBy: currentUser.email,
+            requestedAt: new Date().toISOString(),
+            status: "pending",
+            note: form.editNote?.value || "هیچ هەمانەیەك نەدراوە"
           });
-  
-        } catch (uploadError) {
-          // If image upload fails, mark the document
-          await updateDoc(docRef, {
-            imageUploadError: true
-          });
-          throw uploadError;
+          showSuccess("داواکردنی دەستکاری بۆ پەسەندکردن ناردوو");
         }
+      } else {
+        await addDoc(collection(db, "expenses"), data);
+        showSuccess("مەسروفات بە سەرکەوتوویی زیادکرا");
       }
-  
-      showSuccess("Expense submitted successfully!");
+
       setShowExpenseForm(false);
       setImageFile(null);
-  
+      setImagePreview(null);
+      setImageUrl("");
     } catch (error) {
-      console.error("Error:", error);
-      showSuccess("Error submitting expense", "error");
+      console.error("Error processing expense:", error);
+      showSuccess("هەڵەیەک هەیە لە پەسەندکردنی مەسروفات", "error");
     } finally {
       setIsLoading(false);
     }
@@ -845,29 +922,20 @@ export default function FinanceApp() {
                 )}
 
                 {/* Transaction image */}
-                {/* {t.imageUrl && (
+                {t.image && (
                   <div className="mb-4">
                     <p className="text-xs text-gray-500 mb-1">وێنە</p>
-                    <Image 
-                      src={t.imageUrl} 
-                      alt="Transaction" 
-                      width={400}
-                      height={300}
-                      className="w-full h-40 object-cover rounded-lg" 
-                    />
-                    <button
+                    <img
+                      src={t.image}
+                      alt="Transaction"
+                      className="w-full h-40 object-cover rounded-lg cursor-pointer"
                       onClick={() => {
-                        setSelectedImageUrl(t.imageUrl);
+                        setSelectedImageUrl(t.image);
                         setShowImageModal(true);
                       }}
-                      className="mt-2 text-sm text-blue-400 hover:text-blue-300 flex items-center gap-2"
-                    >
-                      <FaEye size={14} /> پیشاندانی وێنە
-                    </button>
+                    />
                   </div>
-
-                  
-                )} */}
+                )}
 
                 {/* Transaction status and actions */}
                 <div className="flex flex-wrap gap-2 pt-4 border-t border-gray-700">
@@ -899,6 +967,9 @@ export default function FinanceApp() {
                             setShowContributionForm(true);
                           } else {
                             setShowExpenseForm(true);
+                            if (t.image) {
+                              setImagePreview(t.image);
+                            }
                           }
                         }}
                         className="flex items-center gap-1.5 text-xs bg-gray-700 hover:bg-gray-600 text-gray-100 px-3 py-1.5 rounded-lg transition"
@@ -1029,15 +1100,17 @@ export default function FinanceApp() {
                         <p className="text-sm text-gray-300">{contribution.note}</p>
                       </div>
                     )}
-                    {contribution.imageUrl && (
+                    {contribution.image && (
                       <div className="mb-3">
                         <p className="text-xs text-gray-500 mb-1">وێنە</p>
-                        <Image 
-                          src={contribution.imageUrl} 
-                          alt="Transaction" 
-                          width={400}
-                          height={300}
-                          className="w-full h-40 object-cover rounded-lg" 
+                        <img
+                          src={contribution.image}
+                          alt="Transaction"
+                          className="w-full h-40 object-cover rounded-lg cursor-pointer"
+                          onClick={() => {
+                            setSelectedImageUrl(contribution.image);
+                            setShowImageModal(true);
+                          }}
                         />
                       </div>
                     )}
@@ -1117,15 +1190,17 @@ export default function FinanceApp() {
                         <p className="text-sm text-gray-300">{expense.note}</p>
                       </div>
                     )}
-                    {expense.imageUrl && (
+                    {expense.image && (
                       <div className="mb-3">
                         <p className="text-xs text-gray-500 mb-1">وێنە</p>
-                        <Image 
-                          src={expense.imageUrl} 
-                          alt="Transaction" 
-                          width={400}
-                          height={300}
-                          className="w-full h-40 object-cover rounded-lg" 
+                        <img
+                          src={expense.image}
+                          alt="Transaction"
+                          className="w-full h-40 object-cover rounded-lg cursor-pointer"
+                          onClick={() => {
+                            setSelectedImageUrl(expense.image);
+                            setShowImageModal(true);
+                          }}
                         />
                       </div>
                     )}
@@ -1422,6 +1497,8 @@ export default function FinanceApp() {
               onClick={() => {
                 setShowContributionForm(false);
                 setEditingTransaction(null);
+                setImageFile(null);
+                setImagePreview(null);
               }}
               className="absolute top-4 left-4 text-gray-400 hover:text-white p-1"
               aria-label="داخستن"
@@ -1476,18 +1553,6 @@ export default function FinanceApp() {
                   placeholder=" تێبینی "
                 ></textarea>
               </div>
-              <div>
-                {/* <label htmlFor="contributionImage" className="block text-sm font-medium text-gray-300 mb-2">
-                  وێنە (ده‌توانیت بە‌بی‌هی‌له‌)
-                </label> */}
-                {/* <input
-                  type="file"
-                  id="contributionImage"
-                  accept="image/*"
-                  onChange={(e) => setImageFile(e.target.files[0])}
-                  className="w-full px-4 py-3 bg-gray-700 border border-gray-600 rounded-xl focus:ring-2 focus:ring-blue-500 focus:border-blue-500 text-white placeholder-gray-400"
-                /> */}
-              </div>
               {editingTransaction && !isAdmin && (
                 <div>
                   <label htmlFor="editNote" className="block text-sm font-medium text-gray-300 mb-2">
@@ -1529,6 +1594,9 @@ export default function FinanceApp() {
               onClick={() => {
                 setShowExpenseForm(false);
                 setEditingTransaction(null);
+                setImageFile(null);
+                setImagePreview(null);
+                stopCamera();
               }}
               className="absolute top-4 left-4 text-gray-400 hover:text-white p-1"
               aria-label="داخستن"
@@ -1549,7 +1617,7 @@ export default function FinanceApp() {
                     id="expenseDate"
                     name="date"
                     required
-                    defaultValue={editingTransaction?.date || ""}
+                    defaultValue={editingTransaction?.date || format(new Date(), "yyyy-MM-dd")}
                     className="w-full px-4 py-3 bg-gray-700 border border-gray-600 rounded-xl focus:ring-2 focus:ring-blue-500 focus:border-blue-500 text-white"
                   />
                   <FaCalendarAlt className="absolute right-4 top-3.5 text-gray-400" />
@@ -1600,18 +1668,88 @@ export default function FinanceApp() {
                   placeholder="تێبینی زیاتر"
                 ></textarea>
               </div>
-              {/* <div>
-                <label htmlFor="expenseImage" className="block text-sm font-medium text-gray-300 mb-2">
-                  وێنە (ده‌توانیت بە‌بی‌هی‌له‌)
+
+              {/* Image upload section */}
+              <div>
+                <label className="block text-sm font-medium text-gray-300 mb-2">
+                  وێنە (ده‌توانیت بەبی‌هی‌له‌)
                 </label>
-                <input
-                  type="file"
-                  id="expenseImage"
-                  accept="image/*"
-                  onChange={(e) => setImageFile(e.target.files[0])}
-                  className="w-full px-4 py-3 bg-gray-700 border border-gray-600 rounded-xl focus:ring-2 focus:ring-blue-500 focus:border-blue-500 text-white placeholder-gray-400"
-                />
-              </div> */}
+                <div className="space-y-3">
+                  {!showCamera ? (
+                    <>
+                      <div className="flex gap-2">
+                        <button
+                          type="button"
+                          onClick={() => fileInputRef.current.click()}
+                          className="flex-1 flex items-center justify-center gap-2 bg-gray-700 hover:bg-gray-600 text-white px-4 py-2 rounded-xl transition"
+                        >
+                          <FaImage size={16} /> زیادکردنی وێنە
+                        </button>
+                        {/* <button
+                          type="button"
+                          onClick={startCamera}
+                          className="flex-1 flex items-center justify-center gap-2 bg-gray-700 hover:bg-gray-600 text-white px-4 py-2 rounded-xl transition"
+                        >
+                          <FaCamera size={16} /> کامرا
+                        </button> */}
+                      </div>
+                      <input
+                        type="file"
+                        ref={fileInputRef}
+                        accept="image/*"
+                        onChange={handleImageUpload}
+                        className="hidden"
+                      />
+                    </>
+                  ) : (
+                    <div className="relative">
+                      <video
+                        id="cameraVideo"
+                        autoPlay
+                        playsInline
+                        className="w-full h-64 bg-black rounded-lg object-cover"
+                      ></video>
+                      <div className="flex justify-center gap-2 mt-2">
+                        <button
+                          type="button"
+                          onClick={handleCameraCapture}
+                          className="flex-1 flex items-center justify-center gap-2 bg-blue-600 hover:bg-blue-500 text-white px-4 py-2 rounded-xl transition"
+                        >
+                          <FaCamera size={16} /> گرتن
+                        </button>
+                        <button
+                          type="button"
+                          onClick={stopCamera}
+                          className="flex-1 flex items-center justify-center gap-2 bg-gray-600 hover:bg-gray-500 text-white px-4 py-2 rounded-xl transition"
+                        >
+                          <FaTimes size={16} /> لابردن
+                        </button>
+                      </div>
+                    </div>
+                  )}
+
+                  {imagePreview && (
+                    <div className="relative">
+                      <img
+                        src={imagePreview}
+                        alt="Preview"
+                        className="w-full h-64 object-cover rounded-lg"
+                      />
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setImageFile(null);
+                          setImagePreview(null);
+                        }}
+                        className="absolute top-2 right-2 bg-red-600 hover:bg-red-500 text-white p-1.5 rounded-full"
+                      >
+                        <FaTimes size={16} />
+                      </button>
+                    </div>
+                  )}
+                </div>
+              </div>
+
               {editingTransaction && !isAdmin && (
                 <div>
                   <label htmlFor="editNote" className="block text-sm font-medium text-gray-300 mb-2">
@@ -1650,21 +1788,22 @@ export default function FinanceApp() {
         <div className="fixed inset-0 bg-black/70 z-50 flex items-center justify-center p-4">
           <div className="bg-gray-800 rounded-xl border border-gray-700 p-6 w-full max-w-md relative max-h-[90vh] overflow-y-auto">
             <button
-              onClick={() => setShowImageModal(false)}
+              onClick={() => {
+                setShowImageModal(false);
+                setSelectedImageUrl("");
+              }}
               className="absolute top-4 left-4 text-gray-400 hover:text-white p-1"
               aria-label="داخستن"
             >
               <FaTimes size={20} />
             </button>
             <h2 className="text-xl font-bold text-white mb-5 text-center">
-              وێنەی تراکنشن
+              وێنەی خەرجی
             </h2>
-            <Image 
-              src={selectedImageUrl} 
-              alt="Transaction" 
-              width={800}
-              height={600}
-              className="w-full h-auto rounded-lg" 
+            <img
+              src={selectedImageUrl}
+              alt="Transaction"
+              className="w-full h-auto rounded-lg"
             />
           </div>
         </div>
